@@ -1,0 +1,19 @@
+# Binary
+dbx-dash
+
+# Claude
+.claude/
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.coverage
+coverage.xml
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.db

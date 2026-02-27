@@ -1,0 +1,162 @@
+// Package databricks defines the domain models and provider interfaces used
+// throughout dbx-dash. Concrete implementations live in sub-packages (sdk, mock).
+package databricks
+
+import "time"
+
+// Job represents a Databricks job definition.
+type Job struct {
+	JobID       int64
+	Name        string
+	Creator     string
+	CreatedTime time.Time
+}
+
+// JobRun represents a single execution of a job.
+type JobRun struct {
+	RunID       int64
+	JobID       int64
+	// Life-cycle state: PENDING, RUNNING, TERMINATING, TERMINATED, SKIPPED, INTERNAL_ERROR
+	State       string
+	// Terminal result: SUCCESS, FAILED, TIMEDOUT, CANCELED (empty while running)
+	ResultState string
+	StartTime   time.Time
+	EndTime     time.Time
+	DurationMs  int64
+	RunPageURL  string
+}
+
+// RunOutput holds the output and logs for a completed job run.
+type RunOutput struct {
+	RunID      int64
+	Metadata   *JobRun
+	Error      string
+	ErrorTrace string
+	Logs       string
+}
+
+// Cluster represents a Databricks all-purpose or job cluster.
+type Cluster struct {
+	ClusterID    string
+	Name         string
+	// State: PENDING, RUNNING, RESTARTING, RESIZING, TERMINATING, TERMINATED, ERROR, UNKNOWN
+	State        string
+	Source       string
+	DriverTypeID string
+	NodeTypeID   string
+	NumWorkers   int
+	AutoscaleMin int
+	AutoscaleMax int
+	SparkVersion string
+	Creator      string
+	StartTime    time.Time
+}
+
+// SqlWarehouse represents a Databricks SQL warehouse.
+type SqlWarehouse struct {
+	WarehouseID    string
+	Name           string
+	// State: STARTING, RUNNING, STOPPING, STOPPED, DELETING, DELETED
+	State          string
+	ClusterSize    string
+	MinClusters    int
+	MaxClusters    int
+	AutoStopMins   int
+	Creator        string
+	ActiveSessions int
+}
+
+// Pipeline represents a Delta Live Tables pipeline.
+type Pipeline struct {
+	PipelineID   string
+	Name         string
+	// State: IDLE, RUNNING, DEPLOYING, FAILED, DELETING, RECOVERING
+	State        string
+	ClusterID    string
+	Creator      string
+	LastModified time.Time
+}
+
+// PipelineUpdate represents a single DLT pipeline update run.
+type PipelineUpdate struct {
+	UpdateID    string
+	PipelineID  string
+	State       string
+	StartTime   time.Time
+	FullRefresh bool
+	Cause       string
+}
+
+// GroupMember is a member of a workspace group (user, service principal, or nested group).
+type GroupMember struct {
+	ID          string
+	DisplayName string
+	// Type is "User", "Group", or "ServicePrincipal"
+	Type        string
+}
+
+// Group is a workspace-level SCIM group.
+type Group struct {
+	ID          string
+	DisplayName string
+	Members     []GroupMember
+}
+
+// IdentityUser is a workspace-level SCIM user.
+type IdentityUser struct {
+	ID          string
+	UserName    string
+	DisplayName string
+	Active      bool
+}
+
+// WorkspaceServicePrincipal is a workspace-level service principal.
+type WorkspaceServicePrincipal struct {
+	ID            string
+	ApplicationID string
+	DisplayName   string
+	Active        bool
+}
+
+// CatalogPermission represents Unity Catalog grants for a principal on a catalog.
+type CatalogPermission struct {
+	CatalogName string
+	Privileges  []string
+}
+
+// UserDetail holds the full SCIM detail for a workspace user, including permissions.
+type UserDetail struct {
+	ID           string
+	UserName     string
+	DisplayName  string
+	Active       bool
+	Entitlements []string // e.g. "workspace-access", "allow-cluster-create"
+	// Groups contains direct SCIM group memberships (display names).
+	// Used as fallback when workspace group data is unavailable for transitive lookup.
+	Groups             []string
+	Roles              []string // e.g. "admin"
+	CatalogPermissions []CatalogPermission // nil = UC not available; empty slice = no grants
+}
+
+// SPDetail holds the full SCIM detail for a workspace service principal.
+type SPDetail struct {
+	ID            string
+	ApplicationID string
+	DisplayName   string
+	Active        bool
+	Entitlements  []string
+	// Groups contains direct SCIM group memberships (display names).
+	Groups             []string
+	Roles              []string
+	CatalogPermissions []CatalogPermission
+}
+
+// WorkspaceProviders bundles all providers for a single workspace.
+type WorkspaceProviders struct {
+	WorkspaceName string
+	Jobs          JobsProvider
+	Clusters      ClustersProvider
+	Warehouses    WarehousesProvider
+	Pipelines     PipelinesProvider
+	Identity      IdentityProvider
+}
