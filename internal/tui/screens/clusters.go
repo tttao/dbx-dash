@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/tttao/dbx-dash/internal/cache"
 	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
@@ -14,14 +15,30 @@ import (
 type ClustersLoadedMsg struct {
 	Workspace string
 	Clusters  []databricks.Cluster
+	FromCache bool
 	Err       error
 }
 
 // LoadClustersCmd fetches clusters for a workspace.
-func LoadClustersCmd(ctx context.Context, ws string, p *databricks.WorkspaceProviders) tea.Cmd {
+// Falls back to the local cache on error; writes through to cache on success.
+func LoadClustersCmd(ctx context.Context, ws string, p *databricks.WorkspaceProviders, repo *cache.Repository) tea.Cmd {
 	return func() tea.Msg {
 		clusters, err := p.Clusters.ListClusters(ctx)
-		return ClustersLoadedMsg{Workspace: ws, Clusters: clusters, Err: err}
+		if err != nil {
+			if repo != nil {
+				if cached, cErr := repo.GetClustersAsDomain(ws); cErr == nil && len(cached) > 0 {
+					return ClustersLoadedMsg{Workspace: ws, Clusters: cached, FromCache: true}
+				}
+			}
+			return ClustersLoadedMsg{Workspace: ws, Err: err}
+		}
+		// Write-through: update cache.
+		if repo != nil {
+			for _, c := range clusters {
+				_ = repo.UpsertCluster(ws, c)
+			}
+		}
+		return ClustersLoadedMsg{Workspace: ws, Clusters: clusters, FromCache: false}
 	}
 }
 

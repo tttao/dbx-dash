@@ -48,6 +48,9 @@ var (
 
 	styleStatusBar = lipgloss.NewStyle().
 			Foreground(colorMuted)
+
+	styleDataModeLive   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
+	styleDataModeCached = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // yellow
 )
 
 // StateStyle returns a lipgloss style appropriate for the given lifecycle state.

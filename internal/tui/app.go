@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/tttao/dbx-dash/internal/cache"
 	"github.com/tttao/dbx-dash/internal/config"
 	"github.com/tttao/dbx-dash/internal/databricks"
 	"github.com/tttao/dbx-dash/internal/tui/screens"
@@ -34,6 +35,8 @@ type tickMsg time.Time
 type Model struct {
 	cfg        *config.AppConfig
 	providers  map[string]*databricks.WorkspaceProviders
+	cacheRepo  *cache.Repository       // nil when cache is unavailable
+	wsDataMode map[string]string        // workspace name -> "live" | "cached"
 	screen     screenID
 	wsIdx      int
 	dashboard  screens.DashboardModel
@@ -52,7 +55,7 @@ type Model struct {
 }
 
 // NewModel initialises the root model.
-func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string) Model {
+func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string, cacheRepo *cache.Repository) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -68,6 +71,8 @@ func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceP
 	return Model{
 		cfg:        cfg,
 		providers:  providers,
+		cacheRepo:  cacheRepo,
+		wsDataMode: make(map[string]string),
 		screen:     screenDashboard,
 		dashboard:  screens.NewDashboardModel(wsNames, disabled),
 		jobs:       screens.NewJobsModel(),
@@ -110,6 +115,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case screens.JobsLoadedMsg:
+		if msg.FromCache {
+			m.wsDataMode[msg.Workspace] = "cached"
+		} else if msg.Err == nil {
+			m.wsDataMode[msg.Workspace] = "live"
+		}
+
+	case screens.ClustersLoadedMsg:
+		if msg.FromCache {
+			m.wsDataMode[msg.Workspace] = "cached"
+		} else if msg.Err == nil && m.wsDataMode[msg.Workspace] != "cached" {
+			m.wsDataMode[msg.Workspace] = "live"
+		}
 
 	case screens.LoadUserDetailRequestMsg:
 		p := m.providers[msg.Workspace]
@@ -243,18 +262,25 @@ func (m Model) currentWorkspaceName() string {
 	if len(ws) == 0 {
 		return "–"
 	}
-	return ws[m.wsIdx%len(ws)].Label()
+	name := ws[m.wsIdx%len(ws)].Label()
+	switch m.wsDataMode[ws[m.wsIdx%len(ws)].Name] {
+	case "cached":
+		name += styleDataModeCached.Render(" - Cached")
+	case "live":
+		name += styleDataModeLive.Render(" - Live")
+	}
+	return name
 }
 
 // loadDashboard returns a Cmd that fetches summaries for all workspaces.
 func (m Model) loadDashboard() tea.Cmd {
-	return screens.LoadDashboardCmd(m.ctx, m.providers)
+	return screens.LoadDashboardCmd(m.ctx, m.providers, m.cacheRepo)
 }
 
 func (m Model) loadJobs() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.providers))
 	for ws, p := range m.providers {
-		cmds = append(cmds, screens.LoadJobsCmd(m.ctx, ws, p))
+		cmds = append(cmds, screens.LoadJobsCmd(m.ctx, ws, p, m.cacheRepo))
 	}
 	return tea.Batch(cmds...)
 }
@@ -262,7 +288,7 @@ func (m Model) loadJobs() tea.Cmd {
 func (m Model) loadClusters() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.providers))
 	for ws, p := range m.providers {
-		cmds = append(cmds, screens.LoadClustersCmd(m.ctx, ws, p))
+		cmds = append(cmds, screens.LoadClustersCmd(m.ctx, ws, p, m.cacheRepo))
 	}
 	return tea.Batch(cmds...)
 }
@@ -306,8 +332,8 @@ func tickAfter(d time.Duration) tea.Cmd {
 }
 
 // Run starts the Bubble Tea program.
-func Run(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string) error {
-	m := NewModel(cfg, providers, disabled)
+func Run(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string, cacheRepo *cache.Repository) error {
+	m := NewModel(cfg, providers, disabled, cacheRepo)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err

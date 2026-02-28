@@ -113,6 +113,29 @@ func (r *Repository) UpsertCluster(workspace string, c databricks.Cluster) error
 	return nil
 }
 
+// GetJobsAsDomain returns cached jobs as domain types (best-effort: run info is partial).
+func (r *Repository) GetJobsAsDomain(workspace string) ([]databricks.Job, map[int64]*databricks.JobRun, error) {
+	snaps, err := r.GetJobs(workspace)
+	if err != nil {
+		return nil, nil, err
+	}
+	jobs := make([]databricks.Job, 0, len(snaps))
+	runs := make(map[int64]*databricks.JobRun, len(snaps))
+	for _, s := range snaps {
+		jobs = append(jobs, databricks.Job{JobID: s.JobID, Name: s.JobName})
+		if s.LastRunID != 0 {
+			runs[s.JobID] = &databricks.JobRun{
+				RunID:       s.LastRunID,
+				JobID:       s.JobID,
+				State:       s.LastRunState,
+				ResultState: s.LastRunResult,
+				DurationMs:  s.DurationMs,
+			}
+		}
+	}
+	return jobs, runs, nil
+}
+
 // GetClusters returns all cached cluster snapshots for a workspace.
 func (r *Repository) GetClusters(workspace string) ([]ClusterSnapshot, error) {
 	rows, err := r.db.Query(`
@@ -136,4 +159,22 @@ func (r *Repository) GetClusters(workspace string) ([]ClusterSnapshot, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// GetClustersAsDomain returns cached clusters as domain types.
+func (r *Repository) GetClustersAsDomain(workspace string) ([]databricks.Cluster, error) {
+	snaps, err := r.GetClusters(workspace)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]databricks.Cluster, 0, len(snaps))
+	for _, s := range snaps {
+		out = append(out, databricks.Cluster{
+			ClusterID:  s.ClusterID,
+			Name:       s.ClusterName,
+			State:      s.State,
+			NumWorkers: s.NumWorkers,
+		})
+	}
+	return out, nil
 }
