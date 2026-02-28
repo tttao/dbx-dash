@@ -7,7 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/cache"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // WorkspaceSummary holds health metrics for one workspace.
@@ -19,6 +20,8 @@ type WorkspaceSummary struct {
 	Warehouses     int
 	Pipelines      int
 	Loading        bool
+	Disabled       bool // auth was skipped for this session
+	FromCache      bool // data served from local cache
 	Err            error
 }
 
@@ -28,12 +31,12 @@ type DashboardLoadedMsg struct {
 }
 
 // LoadDashboardCmd starts concurrent fetches for all workspaces.
-func LoadDashboardCmd(ctx context.Context, workspaces map[string]*databricks.WorkspaceProviders) tea.Cmd {
+func LoadDashboardCmd(ctx context.Context, workspaces map[string]*databricks.WorkspaceProviders, repo *cache.Repository) tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(workspaces))
 	for name, providers := range workspaces {
 		n, p := name, providers
 		cmds = append(cmds, func() tea.Msg {
-			return fetchSummary(ctx, n, p)
+			return fetchSummary(ctx, n, p, repo)
 		})
 	}
 	return tea.Batch(cmds...)
@@ -42,24 +45,52 @@ func LoadDashboardCmd(ctx context.Context, workspaces map[string]*databricks.Wor
 // workspaceSummaryMsg carries a single workspace summary result.
 type workspaceSummaryMsg WorkspaceSummary
 
-func fetchSummary(ctx context.Context, name string, p *databricks.WorkspaceProviders) tea.Msg {
+func fetchSummary(ctx context.Context, name string, p *databricks.WorkspaceProviders, repo *cache.Repository) tea.Msg {
 	s := WorkspaceSummary{Name: name, Loading: false}
 
 	jobs, err := p.Jobs.ListJobs(ctx, 100)
 	if err != nil {
-		s.Err = err
-		return workspaceSummaryMsg(s)
-	}
-	for _, j := range jobs {
-		runs, _ := p.Jobs.ListRecentRuns(ctx, j.JobID, 1)
-		if len(runs) > 0 {
-			switch runs[0].State {
-			case "RUNNING":
-				s.RunningJobs++
-			case "TERMINATED":
-				if runs[0].ResultState == "FAILED" {
-					s.FailedJobs++
+		// Fallback: use cached jobs for the summary counters.
+		if repo != nil {
+			if cachedJobs, cachedRuns, cErr := repo.GetJobsAsDomain(name); cErr == nil && len(cachedJobs) > 0 {
+				for _, j := range cachedJobs {
+					if r, ok := cachedRuns[j.JobID]; ok {
+						switch r.State {
+						case "RUNNING":
+							s.RunningJobs++
+						case "TERMINATED":
+							if r.ResultState == "FAILED" {
+								s.FailedJobs++
+							}
+						}
+					}
 				}
+				s.FromCache = true
+			} else {
+				s.Err = err
+				return workspaceSummaryMsg(s)
+			}
+		} else {
+			s.Err = err
+			return workspaceSummaryMsg(s)
+		}
+	} else {
+		for _, j := range jobs {
+			runs, _ := p.Jobs.ListRecentRuns(ctx, j.JobID, 1)
+			if len(runs) > 0 {
+				switch runs[0].State {
+				case "RUNNING":
+					s.RunningJobs++
+				case "TERMINATED":
+					if runs[0].ResultState == "FAILED" {
+						s.FailedJobs++
+					}
+				}
+				if repo != nil {
+					_ = repo.UpsertJob(name, j, &runs[0])
+				}
+			} else if repo != nil {
+				_ = repo.UpsertJob(name, j, nil)
 			}
 		}
 	}
@@ -70,6 +101,20 @@ func fetchSummary(ctx context.Context, name string, p *databricks.WorkspaceProvi
 			if c.State == "RUNNING" {
 				s.ActiveClusters++
 			}
+		}
+		if repo != nil {
+			for _, c := range clusters {
+				_ = repo.UpsertCluster(name, c)
+			}
+		}
+	} else if repo != nil {
+		if cached, cErr := repo.GetClustersAsDomain(name); cErr == nil {
+			for _, c := range cached {
+				if c.State == "RUNNING" {
+					s.ActiveClusters++
+				}
+			}
+			s.FromCache = true
 		}
 	}
 
@@ -94,10 +139,19 @@ type DashboardModel struct {
 }
 
 // NewDashboardModel creates a dashboard model with workspace names pre-loaded.
-func NewDashboardModel(workspaceNames []string) DashboardModel {
+// disabledNames lists workspaces whose auth was skipped; they are shown but not polled.
+func NewDashboardModel(workspaceNames []string, disabledNames []string) DashboardModel {
+	disabled := make(map[string]struct{}, len(disabledNames))
+	for _, n := range disabledNames {
+		disabled[n] = struct{}{}
+	}
 	summaries := make(map[string]WorkspaceSummary, len(workspaceNames))
 	for _, n := range workspaceNames {
-		summaries[n] = WorkspaceSummary{Name: n, Loading: true}
+		if _, ok := disabled[n]; ok {
+			summaries[n] = WorkspaceSummary{Name: n, Disabled: true}
+		} else {
+			summaries[n] = WorkspaceSummary{Name: n, Loading: true}
+		}
 	}
 	return DashboardModel{
 		summaries: summaries,
@@ -134,7 +188,17 @@ func (m DashboardModel) View() string {
 }
 
 func renderWorkspaceSummary(s WorkspaceSummary, _ int) string {
-	title := lipgloss.NewStyle().Bold(true).Render("  " + s.Name)
+	label := s.Name
+	if s.FromCache {
+		label += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" - Cached")
+	} else if !s.Loading && !s.Disabled && s.Err == nil {
+		label += lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render(" - Live")
+	}
+	title := lipgloss.NewStyle().Bold(true).Render("  " + label)
+	if s.Disabled {
+		skipped := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  ⊘ auth skipped — workspace unavailable this session")
+		return title + "\n" + skipped + "\n"
+	}
 	if s.Loading {
 		return title + "\n  loading…\n"
 	}

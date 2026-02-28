@@ -1,0 +1,15 @@
+linters:
+  enable:
+    - staticcheck
+    - gosimple
+    - unused
+    - govet
+    - errcheck
+
+linters-settings:
+  staticcheck:
+    checks: ["all"]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

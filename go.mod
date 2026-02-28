@@ -1,4 +1,4 @@
-module github.com/you/dbx-dash
+module github.com/tttao/dbx-dash
 
 go 1.22
 

@@ -42,4 +42,7 @@ type IdentityProvider interface {
 	// catalog level. principalName is the user's email or SP's applicationId string.
 	// Returns nil (not error) when Unity Catalog is unavailable.
 	GetCatalogPermissions(ctx context.Context, principalName string) ([]CatalogPermission, error)
+	// GetSPPermissions returns the workspace-level permission ACL for a service principal.
+	// Returns nil, nil when the Permissions API is not supported on this workspace.
+	GetSPPermissions(ctx context.Context, spID string) ([]SPAccessEntry, error)
 }

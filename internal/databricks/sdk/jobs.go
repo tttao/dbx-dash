@@ -8,7 +8,7 @@ import (
 	dbsdk "github.com/databricks/databricks-sdk-go"
 	"github.com/databricks/databricks-sdk-go/listing"
 	"github.com/databricks/databricks-sdk-go/service/jobs"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // SDKJobsProvider implements databricks.JobsProvider using databricks-sdk-go.

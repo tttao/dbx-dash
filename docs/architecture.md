@@ -3,7 +3,7 @@
 ## Overview
 
 `dbx-dash` is a terminal dashboard for Databricks workspaces, written in Go.
-It provides real-time visibility into jobs, clusters, SQL warehouses, DLT pipelines,
+It provides live visibility into jobs, clusters, SQL warehouses, DLT pipelines,
 and workspace identity (users, groups, service principals) across multiple workspaces.
 
 ## Tech Stack

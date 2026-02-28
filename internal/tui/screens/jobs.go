@@ -7,7 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/cache"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // SelectedJob is returned by JobsModel.SelectedRow() so callers outside this
@@ -29,14 +30,32 @@ type jobRow struct {
 type JobsLoadedMsg struct {
 	Workspace string
 	Jobs      []jobRow
+	FromCache bool
 	Err       error
 }
 
 // LoadJobsCmd fetches jobs and their most recent run for a workspace.
-func LoadJobsCmd(ctx context.Context, ws string, p *databricks.WorkspaceProviders) tea.Cmd {
+// If the live API fails, falls back to the local cache (if repo is non-nil).
+// On success, writes results to the cache.
+func LoadJobsCmd(ctx context.Context, ws string, p *databricks.WorkspaceProviders, repo *cache.Repository) tea.Cmd {
 	return func() tea.Msg {
 		jobs, err := p.Jobs.ListJobs(ctx, 100)
 		if err != nil {
+			// Try cache fallback.
+			if repo != nil {
+				cachedJobs, cachedRuns, cErr := repo.GetJobsAsDomain(ws)
+				if cErr == nil && len(cachedJobs) > 0 {
+					rows := make([]jobRow, 0, len(cachedJobs))
+					for _, j := range cachedJobs {
+						row := jobRow{job: j, workspace: ws}
+						if r, ok := cachedRuns[j.JobID]; ok {
+							row.run = r
+						}
+						rows = append(rows, row)
+					}
+					return JobsLoadedMsg{Workspace: ws, Jobs: rows, FromCache: true}
+				}
+			}
 			return JobsLoadedMsg{Workspace: ws, Err: err}
 		}
 		rows := make([]jobRow, 0, len(jobs))
@@ -46,19 +65,24 @@ func LoadJobsCmd(ctx context.Context, ws string, p *databricks.WorkspaceProvider
 			if len(runs) > 0 {
 				r := runs[0]
 				row.run = &r
+				// Write-through: update cache with latest run data.
+				if repo != nil {
+					_ = repo.UpsertJob(ws, j, &r)
+				}
+			} else if repo != nil {
+				_ = repo.UpsertJob(ws, j, nil)
 			}
 			rows = append(rows, row)
 		}
-		return JobsLoadedMsg{Workspace: ws, Jobs: rows}
+		return JobsLoadedMsg{Workspace: ws, Jobs: rows, FromCache: false}
 	}
 }
 
 // JobsModel is the Bubble Tea model for the jobs screen.
 type JobsModel struct {
 	table     table.Model
-	rows      []jobRow
-	workspace string // current workspace filter
-	width     int
+	rows   []jobRow
+	width  int
 	height    int
 }
 

@@ -124,6 +124,21 @@ type CatalogPermission struct {
 	Privileges  []string
 }
 
+// SPAccessEntry is one entry in a service principal's workspace permission ACL.
+// Exactly one of UserName or GroupName is non-empty.
+type SPAccessEntry struct {
+	UserName  string // non-empty when a user has been granted access
+	GroupName string // non-empty when a group has been granted access
+	Level     string // e.g. "CAN_USE", "CAN_MANAGE", "IS_OWNER"
+}
+
+// SPUserAccess records one service principal reachable by a user via group co-membership.
+type SPUserAccess struct {
+	SPID        string
+	DisplayName string
+	ViaGroups   []string // group DisplayNames linking user ↔ SP
+}
+
 // UserDetail holds the full SCIM detail for a workspace user, including permissions.
 type UserDetail struct {
 	ID           string
@@ -136,6 +151,7 @@ type UserDetail struct {
 	Groups             []string
 	Roles              []string // e.g. "admin"
 	CatalogPermissions []CatalogPermission // nil = UC not available; empty slice = no grants
+	SPAccess           []SPUserAccess      // SPs reachable via group co-membership
 }
 
 // SPDetail holds the full SCIM detail for a workspace service principal.
@@ -149,6 +165,7 @@ type SPDetail struct {
 	Groups             []string
 	Roles              []string
 	CatalogPermissions []CatalogPermission
+	AccessControl      []SPAccessEntry // workspace-level permission ACL; nil = API not supported
 }
 
 // WorkspaceProviders bundles all providers for a single workspace.

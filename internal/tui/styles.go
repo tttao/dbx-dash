@@ -12,24 +12,9 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("15"))
 
-	styleHeader = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("14")).
-			BorderBottom(true).
-			BorderStyle(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("238"))
 
-	styleCard = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Padding(0, 1)
 
-	styleCardLabel = lipgloss.NewStyle().
-			Foreground(colorMuted)
 
-	styleCardValue = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("15"))
 
 	styleRunning = lipgloss.NewStyle().Foreground(colorRunning).Bold(true)
 	styleFailed  = lipgloss.NewStyle().Foreground(colorFailed).Bold(true)
@@ -48,6 +33,9 @@ var (
 
 	styleStatusBar = lipgloss.NewStyle().
 			Foreground(colorMuted)
+
+	styleDataModeLive   = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))  // green
+	styleDataModeCached = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // yellow
 )
 
 // StateStyle returns a lipgloss style appropriate for the given lifecycle state.
