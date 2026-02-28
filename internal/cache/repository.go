@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // JobSnapshot is a persisted summary of a job's most recent run.

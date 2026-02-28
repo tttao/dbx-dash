@@ -5,7 +5,7 @@ package mock
 import (
 	"context"
 
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // JobsProvider is a mock implementation of databricks.JobsProvider.

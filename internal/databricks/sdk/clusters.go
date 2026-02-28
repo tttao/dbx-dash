@@ -6,7 +6,7 @@ import (
 
 	dbsdk "github.com/databricks/databricks-sdk-go"
 	"github.com/databricks/databricks-sdk-go/service/compute"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // SDKClustersProvider implements databricks.ClustersProvider using databricks-sdk-go.

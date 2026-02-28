@@ -7,7 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // WorkspaceSummary holds health metrics for one workspace.
@@ -19,6 +19,7 @@ type WorkspaceSummary struct {
 	Warehouses     int
 	Pipelines      int
 	Loading        bool
+	Disabled       bool // auth was skipped for this session
 	Err            error
 }
 
@@ -94,10 +95,19 @@ type DashboardModel struct {
 }
 
 // NewDashboardModel creates a dashboard model with workspace names pre-loaded.
-func NewDashboardModel(workspaceNames []string) DashboardModel {
+// disabledNames lists workspaces whose auth was skipped; they are shown but not polled.
+func NewDashboardModel(workspaceNames []string, disabledNames []string) DashboardModel {
+	disabled := make(map[string]struct{}, len(disabledNames))
+	for _, n := range disabledNames {
+		disabled[n] = struct{}{}
+	}
 	summaries := make(map[string]WorkspaceSummary, len(workspaceNames))
 	for _, n := range workspaceNames {
-		summaries[n] = WorkspaceSummary{Name: n, Loading: true}
+		if _, ok := disabled[n]; ok {
+			summaries[n] = WorkspaceSummary{Name: n, Disabled: true}
+		} else {
+			summaries[n] = WorkspaceSummary{Name: n, Loading: true}
+		}
 	}
 	return DashboardModel{
 		summaries: summaries,
@@ -135,6 +145,10 @@ func (m DashboardModel) View() string {
 
 func renderWorkspaceSummary(s WorkspaceSummary, _ int) string {
 	title := lipgloss.NewStyle().Bold(true).Render("  " + s.Name)
+	if s.Disabled {
+		skipped := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  ⊘ auth skipped — workspace unavailable this session")
+		return title + "\n" + skipped + "\n"
+	}
 	if s.Loading {
 		return title + "\n  loading…\n"
 	}

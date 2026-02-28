@@ -8,7 +8,7 @@ import (
 	dbsdk "github.com/databricks/databricks-sdk-go"
 	dbcatalog "github.com/databricks/databricks-sdk-go/service/catalog"
 	"github.com/databricks/databricks-sdk-go/service/iam"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // SDKIdentityProvider implements databricks.IdentityProvider using workspace-level

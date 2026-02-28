@@ -11,9 +11,9 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/you/dbx-dash/internal/config"
-	"github.com/you/dbx-dash/internal/databricks"
-	"github.com/you/dbx-dash/internal/tui/screens"
+	"github.com/tttao/dbx-dash/internal/config"
+	"github.com/tttao/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/tui/screens"
 )
 
 type screenID int
@@ -52,7 +52,7 @@ type Model struct {
 }
 
 // NewModel initialises the root model.
-func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders) Model {
+func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string) Model {
 	ctx, cancel := context.WithCancel(context.Background())
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -69,7 +69,7 @@ func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceP
 		cfg:        cfg,
 		providers:  providers,
 		screen:     screenDashboard,
-		dashboard:  screens.NewDashboardModel(wsNames),
+		dashboard:  screens.NewDashboardModel(wsNames, disabled),
 		jobs:       screens.NewJobsModel(),
 		clusters:   screens.NewClustersModel(),
 		warehouses: screens.NewWarehousesModel(),
@@ -306,8 +306,8 @@ func tickAfter(d time.Duration) tea.Cmd {
 }
 
 // Run starts the Bubble Tea program.
-func Run(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders) error {
-	m := NewModel(cfg, providers)
+func Run(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string) error {
+	m := NewModel(cfg, providers, disabled)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err

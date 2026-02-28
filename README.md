@@ -33,13 +33,13 @@ Terminal dashboard for monitoring Databricks workspaces, written in Go.
 ## Install
 
 ```bash
-go install github.com/you/dbx-dash/cmd/dbx-dash@latest
+go install github.com/tttao/dbx-dash/cmd/dbx-dash@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/you/dbx-dash
+git clone https://github.com/tttao/dbx-dash
 cd dbx-dash
 go build -o dbx-dash ./cmd/dbx-dash
 ```

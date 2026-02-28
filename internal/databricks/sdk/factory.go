@@ -3,12 +3,13 @@
 package sdk
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
 	dbsdk "github.com/databricks/databricks-sdk-go"
-	"github.com/you/dbx-dash/internal/config"
-	"github.com/you/dbx-dash/internal/databricks"
+	"github.com/tttao/dbx-dash/internal/config"
+	"github.com/tttao/dbx-dash/internal/databricks"
 )
 
 // WorkspaceClientFactory creates and caches SDK workspace clients, one per
@@ -42,6 +43,23 @@ func (f *WorkspaceClientFactory) GetProviders(p config.WorkspaceProfile) (*datab
 		Pipelines:     &SDKPipelinesProvider{client: client},
 		Identity:      &SDKIdentityProvider{client: client},
 	}, nil
+}
+
+// ValidateAuth makes a lightweight API call to confirm credentials are valid.
+func (f *WorkspaceClientFactory) ValidateAuth(ctx context.Context, p config.WorkspaceProfile) error {
+	client, err := f.getOrCreate(p)
+	if err != nil {
+		return err
+	}
+	_, err = client.CurrentUser.Me(ctx)
+	return err
+}
+
+// EvictCache removes the cached client so the next call creates a fresh one.
+func (f *WorkspaceClientFactory) EvictCache(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.clients, name)
 }
 
 func (f *WorkspaceClientFactory) getOrCreate(p config.WorkspaceProfile) (*dbsdk.WorkspaceClient, error) {
