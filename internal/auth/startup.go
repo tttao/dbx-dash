@@ -34,7 +34,7 @@ func Run(ctx context.Context, cfg *config.AppConfig, factory Validator) ([]strin
 
 		fmt.Printf("\n⚠  workspace %q: auth check failed\n", ws.Name)
 
-		if promptYN(fmt.Sprintf("   Re-authenticate now? [y/N] ")) {
+		if promptYN("   Re-authenticate now? [y/N] ") {
 			reauth(ws)
 			factory.EvictCache(ws.Name) // force fresh client with updated credentials
 			if factory.ValidateAuth(ctx, ws) == nil {

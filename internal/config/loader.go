@@ -124,10 +124,8 @@ func loadDbxDashConfig(cfg *AppConfig) error {
 			if ow.RefreshInterval > 0 {
 				cfg.Workspaces[i].RefreshInterval = ow.RefreshInterval
 			}
-		} else {
-			// New workspace defined entirely in dbx-dash config — skip if no host.
-			// (Workspaces without credentials can't be used; add host in databrickscfg.)
 		}
+		// New workspace defined entirely in dbx-dash config — skip if no host.
 	}
 	return nil
 }

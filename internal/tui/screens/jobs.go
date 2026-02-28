@@ -81,9 +81,8 @@ func LoadJobsCmd(ctx context.Context, ws string, p *databricks.WorkspaceProvider
 // JobsModel is the Bubble Tea model for the jobs screen.
 type JobsModel struct {
 	table     table.Model
-	rows      []jobRow
-	workspace string // current workspace filter
-	width     int
+	rows   []jobRow
+	width  int
 	height    int
 }
 
