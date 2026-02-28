@@ -152,6 +152,7 @@ type IdentityProvider struct {
 	UserDetails       map[string]*databricks.UserDetail
 	SPDetails         map[string]*databricks.SPDetail
 	CatalogPerms      map[string][]databricks.CatalogPermission // key: principalName
+	SPPermissions     map[string][]databricks.SPAccessEntry     // key: spID
 	Err               error
 }
 
@@ -186,4 +187,11 @@ func (m *IdentityProvider) GetCatalogPermissions(_ context.Context, principalNam
 		return nil, m.Err
 	}
 	return m.CatalogPerms[principalName], nil
+}
+
+func (m *IdentityProvider) GetSPPermissions(_ context.Context, spID string) ([]databricks.SPAccessEntry, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.SPPermissions[spID], nil
 }

@@ -86,7 +86,7 @@ func LoadUserDetailCmd(ctx context.Context, userID string, p databricks.Identity
 	}
 }
 
-// LoadSPDetailCmd fetches full SCIM details and Unity Catalog permissions for a service principal.
+// LoadSPDetailCmd fetches full SCIM details, Unity Catalog permissions, and workspace ACL for a service principal.
 func LoadSPDetailCmd(ctx context.Context, spID string, p databricks.IdentityProvider) tea.Cmd {
 	return func() tea.Msg {
 		detail, err := p.GetServicePrincipal(ctx, spID)
@@ -97,6 +97,8 @@ func LoadSPDetailCmd(ctx context.Context, spID string, p databricks.IdentityProv
 			// Unity Catalog identifies SPs by their applicationId string.
 			catPerms, _ := p.GetCatalogPermissions(ctx, detail.ApplicationID)
 			detail.CatalogPermissions = catPerms
+			// Workspace-level permission ACL (soft-fail if API unsupported).
+			detail.AccessControl, _ = p.GetSPPermissions(ctx, spID)
 		}
 		return SPDetailLoadedMsg{Detail: detail}
 	}
@@ -383,6 +385,90 @@ func (m IdentityModel) wsGroups() []databricks.Group {
 	return m.workspaces[idx].groups
 }
 
+// wsData returns the full wsIdentityData for the workspace currently shown in the popup.
+func (m IdentityModel) wsData() *wsIdentityData {
+	if m.popupWsName == "" {
+		return nil
+	}
+	idx, ok := m.wsIndex[m.popupWsName]
+	if !ok {
+		return nil
+	}
+	return &m.workspaces[idx]
+}
+
+// computeUserSPAccess returns SPs reachable by userID via shared group membership.
+// Zero extra API calls — uses already-loaded workspace group/SP data.
+func computeUserSPAccess(userID string, ws wsIdentityData) []databricks.SPUserAccess {
+	if userID == "" || len(ws.sps) == 0 || len(ws.groups) == 0 {
+		return nil
+	}
+
+	// Build member→groups map and SP set.
+	memberToGroupIDs := make(map[string][]string, len(ws.groups))
+	groupNameByID := make(map[string]string, len(ws.groups))
+	for _, g := range ws.groups {
+		groupNameByID[g.ID] = g.DisplayName
+		for _, m := range g.Members {
+			memberToGroupIDs[m.ID] = append(memberToGroupIDs[m.ID], g.ID)
+		}
+	}
+	spByID := make(map[string]databricks.WorkspaceServicePrincipal, len(ws.sps))
+	for _, sp := range ws.sps {
+		spByID[sp.ID] = sp
+	}
+
+	// BFS: collect all group IDs the user belongs to (direct + transitive).
+	userGroupIDs := make(map[string]bool)
+	queue := append([]string{}, memberToGroupIDs[userID]...)
+	for _, gid := range queue {
+		userGroupIDs[gid] = true
+	}
+	for len(queue) > 0 {
+		curr := queue[0]
+		queue = queue[1:]
+		for _, parentGID := range memberToGroupIDs[curr] {
+			if !userGroupIDs[parentGID] {
+				userGroupIDs[parentGID] = true
+				queue = append(queue, parentGID)
+			}
+		}
+	}
+
+	// For each SP, find groups that contain both the user and the SP.
+	spAccess := make(map[string]*databricks.SPUserAccess)
+	for _, g := range ws.groups {
+		if !userGroupIDs[g.ID] {
+			continue
+		}
+		for _, m := range g.Members {
+			sp, isSP := spByID[m.ID]
+			if !isSP {
+				continue
+			}
+			if acc, exists := spAccess[sp.ID]; exists {
+				acc.ViaGroups = append(acc.ViaGroups, groupNameByID[g.ID])
+			} else {
+				spAccess[sp.ID] = &databricks.SPUserAccess{
+					SPID:        sp.ID,
+					DisplayName: sp.DisplayName,
+					ViaGroups:   []string{groupNameByID[g.ID]},
+				}
+			}
+		}
+	}
+
+	result := make([]databricks.SPUserAccess, 0, len(spAccess))
+	for _, acc := range spAccess {
+		sort.Strings(acc.ViaGroups)
+		result = append(result, *acc)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return strings.ToLower(result[i].DisplayName) < strings.ToLower(result[j].DisplayName)
+	})
+	return result
+}
+
 func (m IdentityModel) rebuild() IdentityModel {
 	q := strings.ToLower(strings.TrimSpace(m.search.Value()))
 	if m.treeView {
@@ -553,6 +639,8 @@ func renderUserDetailPopup(u *databricks.UserDetail, groupSection string) string
 	b.WriteString("\n")
 
 	b.WriteString(renderCatalogPerms(u.CatalogPermissions))
+	b.WriteString("\n")
+	b.WriteString(renderUserSPAccess(u.SPAccess))
 	return b.String()
 }
 
@@ -583,6 +671,8 @@ func renderSPDetailPopup(sp *databricks.SPDetail, groupSection string) string {
 	b.WriteString("\n")
 
 	b.WriteString(renderCatalogPerms(sp.CatalogPermissions))
+	b.WriteString("\n")
+	b.WriteString(renderSPWhoHasAccess(sp.AccessControl))
 	return b.String()
 }
 
@@ -620,6 +710,42 @@ func renderCatalogPerms(perms []databricks.CatalogPermission) string {
 				b.WriteString("    " + styleIdentityUser.Render("●") + " " + priv + "\n")
 			}
 		}
+	}
+	return b.String()
+}
+
+func renderSPWhoHasAccess(acl []databricks.SPAccessEntry) string {
+	var b strings.Builder
+	b.WriteString(styleIdentitySection.Render("WHO HAS ACCESS") + "\n")
+	if acl == nil {
+		b.WriteString("  " + styleIdentityMuted.Render("(workspace permissions not available)") + "\n")
+		return b.String()
+	}
+	if len(acl) == 0 {
+		b.WriteString("  " + styleIdentityMuted.Render("(no explicit workspace permissions)") + "\n")
+		return b.String()
+	}
+	for _, e := range acl {
+		level := styleIdentityMuted.Render("[" + strings.ToLower(e.Level) + "]")
+		if e.UserName != "" {
+			b.WriteString("  " + styleIdentityUser.Render("●") + " " + e.UserName + "  " + level + "\n")
+		} else if e.GroupName != "" {
+			b.WriteString("  " + styleIdentityUser.Render("●") + " " + styleIdentityGroupName.Render(e.GroupName) + "  " + level + styleIdentityMuted.Render(" (group)") + "\n")
+		}
+	}
+	return b.String()
+}
+
+func renderUserSPAccess(access []databricks.SPUserAccess) string {
+	var b strings.Builder
+	b.WriteString(styleIdentitySection.Render("SERVICE PRINCIPAL ACCESS") + "\n")
+	if len(access) == 0 {
+		b.WriteString("  " + styleIdentityMuted.Render("(no service principal co-memberships)") + "\n")
+		return b.String()
+	}
+	for _, a := range access {
+		b.WriteString("  " + styleIdentityUser.Render("●") + " " + styleIdentitySP.Render(a.DisplayName) + "\n")
+		b.WriteString("      " + styleIdentityMuted.Render("via: "+strings.Join(a.ViaGroups, ", ")) + "\n")
 	}
 	return b.String()
 }
@@ -732,7 +858,14 @@ func buildWorkspaceItems(
 						line := "      " + styleIdentityMuted.Render(branch+" ") +
 							memberNameStyle(memberType).Render(displayName) + "  " +
 							memberTypeTag(memberType)
-						items = append(items, treeItem{line: line})
+						it := treeItem{line: line}
+						switch memberType {
+						case "User":
+							it.isUser, it.entityID, it.wsName = true, mem.ID, ws.name
+						case "ServicePrincipal":
+							it.isSP, it.entityID, it.wsName = true, mem.ID, ws.name
+						}
+						items = append(items, it)
 					}
 				}
 			}
@@ -935,6 +1068,9 @@ func (m IdentityModel) rerenderPopup() IdentityModel {
 			groupSection = renderGroupAncestryTree(u.ID, m.wsGroups())
 		} else {
 			groupSection = popupGroupSection(direct, indirect)
+		}
+		if wsD := m.wsData(); wsD != nil {
+			u.SPAccess = computeUserSPAccess(u.ID, *wsD)
 		}
 		m.popup = &popupContent{
 			title: "User: " + u.UserName,

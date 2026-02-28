@@ -161,6 +161,26 @@ func (p *SDKIdentityProvider) GetCatalogPermissions(ctx context.Context, princip
 	return result, nil
 }
 
+// GetSPPermissions returns workspace-level ACL entries for a service principal.
+// Soft-fails (returns nil, nil) if the Permissions API is unsupported.
+func (p *SDKIdentityProvider) GetSPPermissions(ctx context.Context, spID string) ([]databricks.SPAccessEntry, error) {
+	perms, err := p.client.Permissions.GetByRequestObjectTypeAndRequestObjectId(ctx, "servicePrincipals", spID)
+	if err != nil {
+		return nil, nil // soft-fail: unsupported object type or permission denied
+	}
+	var out []databricks.SPAccessEntry
+	for _, acl := range perms.AccessControlList {
+		for _, perm := range acl.AllPermissions {
+			out = append(out, databricks.SPAccessEntry{
+				UserName:  acl.UserName,
+				GroupName: acl.GroupName,
+				Level:     string(perm.PermissionLevel),
+			})
+		}
+	}
+	return out, nil
+}
+
 func scimComplexValues(vals []iam.ComplexValue) []string {
 	out := make([]string, 0, len(vals))
 	for _, v := range vals {

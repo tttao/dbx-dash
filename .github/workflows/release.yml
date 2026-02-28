@@ -2,40 +2,33 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags:
+      - 'v*.*.*'
 
 permissions:
-  id-token: write   # OIDC PyPI trusted publisher
-  contents: write   # push tags + CHANGELOG
+  contents: write
 
 jobs:
   release:
-    name: Semantic Release
+    name: Build & Release
     runs-on: ubuntu-latest
-    concurrency: release
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
         with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          go-version-file: go.mod
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install build tools
-        run: pip install python-semantic-release hatchling
-
-      - name: Semantic Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build binaries
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          semantic-release version
-          semantic-release publish
+          GOOS=linux  GOARCH=amd64 go build -ldflags="-X main.version=${GITHUB_REF_NAME}" -o dbx-dash-linux-amd64   ./cmd/dbx-dash
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-X main.version=${GITHUB_REF_NAME}" -o dbx-dash-darwin-amd64  ./cmd/dbx-dash
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-X main.version=${GITHUB_REF_NAME}" -o dbx-dash-darwin-arm64  ./cmd/dbx-dash
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        # Only runs when semantic-release creates a new version tag
-        if: steps.release.outputs.released == 'true'
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dbx-dash-linux-amd64
+            dbx-dash-darwin-amd64
+            dbx-dash-darwin-arm64
