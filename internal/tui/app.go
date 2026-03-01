@@ -340,7 +340,7 @@ func tickAfter(d time.Duration) tea.Cmd {
 // Run starts the Bubble Tea program.
 func Run(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string, cacheRepo *cache.Repository) error {
 	m := NewModel(cfg, providers, disabled, cacheRepo)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
