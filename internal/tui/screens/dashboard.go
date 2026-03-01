@@ -170,6 +170,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 	case workspaceSummaryMsg:
 		s := WorkspaceSummary(v)
 		m.summaries[s.Name] = s
+		return m, func() tea.Msg { return DashboardLoadedMsg{} }
 	}
 	return m, nil
 }
