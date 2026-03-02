@@ -45,10 +45,11 @@ type Model struct {
 	warehouses screens.WarehousesModel
 	identity   screens.IdentityModel
 	runDetail  screens.RunDetailModel
-	spinner    spinner.Model
-	loading    bool
-	width      int
-	height     int
+	spinner       spinner.Model
+	loading       bool
+	lastRefreshed time.Time
+	width         int
+	height        int
 	interval   time.Duration
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -115,6 +116,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case screens.DashboardLoadedMsg:
+		m.lastRefreshed = time.Now()
 
 	case screens.JobsLoadedMsg:
 		if msg.FromCache {
@@ -237,18 +241,20 @@ func (m Model) View() string {
 func (m Model) renderHeader() string {
 	ws := m.currentWorkspaceName()
 	wsBar := styleWorkspaceBar.Render(fmt.Sprintf("◀  %s  ▶", ws))
-	spin := ""
-	if m.loading {
-		spin = m.spinner.View() + " refreshing…"
+	var status string
+	if m.lastRefreshed.IsZero() {
+		status = m.spinner.View() + " loading…"
+	} else {
+		status = "last refreshed: " + m.lastRefreshed.Format("15:04:05")
 	}
-	right := styleStatusBar.Render(time.Now().Format("15:04:05"))
+	right := styleStatusBar.Render(status)
 	title := styleTitle.Render("dbx-dash")
 	left := title + "  " + wsBar
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - lipgloss.Width(spin)
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
 		gap = 1
 	}
-	return left + strings.Repeat(" ", gap) + spin + right
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // renderHelp renders the bottom keybinding bar.
@@ -334,7 +340,7 @@ func tickAfter(d time.Duration) tea.Cmd {
 // Run starts the Bubble Tea program.
 func Run(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceProviders, disabled []string, cacheRepo *cache.Repository) error {
 	m := NewModel(cfg, providers, disabled, cacheRepo)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
