@@ -584,10 +584,6 @@ var (
 	styleCatalogValue   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	styleCatalogGroup   = lipgloss.NewStyle().Foreground(lipgloss.Color("33"))
 	styleCatalogPriv    = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	styleCatalogSep     = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("238")).
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(lipgloss.Color("238"))
 )
 
 func (m CatalogModel) View() string {
