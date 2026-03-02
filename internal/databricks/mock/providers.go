@@ -195,3 +195,37 @@ func (m *IdentityProvider) GetSPPermissions(_ context.Context, spID string) ([]d
 	}
 	return m.SPPermissions[spID], nil
 }
+
+// CatalogProvider is a mock implementation of databricks.CatalogProvider.
+type CatalogProvider struct {
+	Catalogs      []databricks.CatalogInfo
+	Schemas       map[string][]databricks.SchemaInfo  // key: catalogName
+	Tables        map[string][]databricks.TableInfo   // key: "catalogName.schemaName"
+	ObjectDetails map[string]*databricks.ObjectDetail // key: fullName
+	Err           error
+}
+
+func (m *CatalogProvider) ListCatalogs(_ context.Context) ([]databricks.CatalogInfo, error) {
+	return m.Catalogs, m.Err
+}
+
+func (m *CatalogProvider) ListSchemas(_ context.Context, catalogName string) ([]databricks.SchemaInfo, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.Schemas[catalogName], nil
+}
+
+func (m *CatalogProvider) ListTables(_ context.Context, catalogName, schemaName string) ([]databricks.TableInfo, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.Tables[catalogName+"."+schemaName], nil
+}
+
+func (m *CatalogProvider) GetObjectDetail(_ context.Context, _, fullName string) (*databricks.ObjectDetail, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.ObjectDetails[fullName], nil
+}

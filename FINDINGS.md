@@ -36,6 +36,57 @@ were silently dropped from the rendered tree.
 
 ---
 
+### Databricks SCIM: nested groups use type `"subgroup"` not `"Group"`
+
+**Affected code**: `internal/databricks/sdk/identity.go` — `memberTypeFromRef`
+
+**Finding**: The Databricks workspace SCIM API returns group-type members with `type: "subgroup"`
+(lowercase, non-standard). The SCIM spec uses `"Group"`. Code checking `m.Type == "Group"` silently
+skipped all nested group members.
+
+**Fix**: `memberTypeFromRef` normalises `strings.EqualFold(explicit, "subgroup")` → `"Group"` before
+any other check.
+
+---
+
+### Unity Catalog: privilege inheritance is downward only (not upward)
+
+**Finding**: In Databricks Unity Catalog, when a group G has a grant on a securable, only G's
+**members** (transitively) inherit the privilege. G's **parent groups** do NOT inherit the grant
+because G is their subgroup.
+
+Specifically: if `BusinessAnalysts` contains `BusinessAnalysts-CreditRisk` as a subgroup, and
+`BusinessAnalysts-CreditRisk` has a grant, `BusinessAnalysts` does NOT get that grant.
+
+**Impact**: An upward-expansion feature was implemented then removed — it was semantically incorrect.
+The correct expansion is **downward only** (show members of granted groups).
+
+---
+
+### Workspace SCIM `ListGroups` returns only workspace-level groups
+
+**Finding**: `p.client.Groups.ListAll` returns only groups added to the workspace (workspace-level).
+Account-level groups with Unity Catalog grants but not explicitly added to the workspace will NOT
+appear in the list. Typical small workspaces may have only 4–10 workspace groups even if hundreds
+of account groups exist.
+
+**Impact**: `expandGrants` can only expand group principals that appear in the workspace SCIM group
+list. Account-level group principals show as-is without member expansion.
+
+---
+
+### Catalog screen timing: `CatalogModel.workspace` is empty until first `Reset`
+
+**Finding**: The root model calls `loadAllIdentity()` at `Init()`. `IdentityLoadedMsg` arrives
+while `CatalogModel.workspace == ""`, so the workspace-match check drops the groups. When the user
+later presses `6`, `Reset` creates a fresh model with `groups = nil`.
+
+**Fix**: Root model caches `wsGroups map[string][]databricks.Group` populated by every
+`IdentityLoadedMsg`. `Reset(ws, m.wsGroups[ws])` passes groups directly so they're available
+immediately on first detail load.
+
+---
+
 ### Databricks SDK: `NewWorkspaceClient` does not validate credentials at construction time
 
 **Finding**: `dbsdk.NewWorkspaceClient(cfg)` succeeds even with invalid or expired credentials.

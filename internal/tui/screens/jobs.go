@@ -3,7 +3,9 @@ package screens
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -34,12 +36,26 @@ type JobsLoadedMsg struct {
 	Err       error
 }
 
+// agePresets is the cycle order for the jobs age filter (days; 0 = all).
+var agePresets = []int{1, 7, 30, 0}
+
+func ageLabel(days int) string {
+	switch days {
+	case 0:
+		return "all"
+	case 1:
+		return "1d"
+	default:
+		return fmt.Sprintf("%dd", days)
+	}
+}
+
 // LoadJobsCmd fetches jobs and their most recent run for a workspace.
 // If the live API fails, falls back to the local cache (if repo is non-nil).
 // On success, writes results to the cache.
 func LoadJobsCmd(ctx context.Context, ws string, p *databricks.WorkspaceProviders, repo *cache.Repository) tea.Cmd {
 	return func() tea.Msg {
-		jobs, err := p.Jobs.ListJobs(ctx, 100)
+		jobs, err := p.Jobs.ListJobs(ctx, 0) // 0 = fetch all jobs
 		if err != nil {
 			// Try cache fallback.
 			if repo != nil {
@@ -80,13 +96,15 @@ func LoadJobsCmd(ctx context.Context, ws string, p *databricks.WorkspaceProvider
 
 // JobsModel is the Bubble Tea model for the jobs screen.
 type JobsModel struct {
-	table     table.Model
-	rows   []jobRow
-	width  int
-	height    int
+	table   table.Model
+	allRows []jobRow // unfiltered
+	rows    []jobRow // after age filter
+	ageDays int      // 0 = all
+	width   int
+	height  int
 }
 
-func NewJobsModel() JobsModel {
+func NewJobsModel(ageDays int) JobsModel {
 	cols := []table.Column{
 		{Title: "Job", Width: 35},
 		{Title: "State", Width: 14},
@@ -109,13 +127,13 @@ func NewJobsModel() JobsModel {
 		Foreground(lipgloss.Color("15")).
 		Background(lipgloss.Color("57"))
 	t.SetStyles(s)
-	return JobsModel{table: t}
+	return JobsModel{table: t, ageDays: ageDays}
 }
 
 func (m JobsModel) SetSize(w, h int) JobsModel {
 	m.width = w
 	m.height = h
-	m.table.SetHeight(h - 6)
+	m.table.SetHeight(h - 8) // extra row for filter label
 	return m
 }
 
@@ -123,8 +141,16 @@ func (m JobsModel) Update(msg tea.Msg) (JobsModel, tea.Cmd) {
 	switch v := msg.(type) {
 	case JobsLoadedMsg:
 		if v.Err == nil {
-			m.rows = append(m.rows, v.Jobs...)
+			m.allRows = append(m.allRows, v.Jobs...)
+			m.rows = filterByAge(m.allRows, m.ageDays)
 			m.table.SetRows(m.buildRows())
+		}
+	case tea.KeyMsg:
+		if key.Matches(v, key.NewBinding(key.WithKeys("t"))) {
+			m.ageDays = nextAgePreset(m.ageDays)
+			m.rows = filterByAge(m.allRows, m.ageDays)
+			m.table.SetRows(m.buildRows())
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -159,5 +185,36 @@ func (m JobsModel) SelectedRow() *SelectedJob {
 }
 
 func (m JobsModel) View() string {
-	return lipgloss.NewStyle().Width(m.width).Render(m.table.View())
+	label := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240")).
+		Render(fmt.Sprintf("  Filter: last %s  (t to change)  — %d jobs", ageLabel(m.ageDays), len(m.rows)))
+	return label + "\n" + lipgloss.NewStyle().Width(m.width).Render(m.table.View())
+}
+
+// filterByAge returns rows whose last run is within the past ageDays days.
+// Jobs with no run (or zero StartTime) are always included.
+func filterByAge(rows []jobRow, ageDays int) []jobRow {
+	if ageDays == 0 {
+		return rows
+	}
+	cutoff := time.Now().AddDate(0, 0, -ageDays)
+	out := make([]jobRow, 0, len(rows))
+	for _, r := range rows {
+		if r.run == nil || r.run.StartTime.IsZero() {
+			out = append(out, r)
+		} else if r.run.StartTime.After(cutoff) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// nextAgePreset advances to the next preset in the cycle.
+func nextAgePreset(current int) int {
+	for i, p := range agePresets {
+		if p == current {
+			return agePresets[(i+1)%len(agePresets)]
+		}
+	}
+	return agePresets[0]
 }

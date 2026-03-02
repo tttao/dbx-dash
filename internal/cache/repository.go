@@ -2,6 +2,7 @@ package cache
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -159,6 +160,46 @@ func (r *Repository) GetClusters(workspace string) ([]ClusterSnapshot, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// UpsertIdentity persists the workspace group hierarchy to the cache.
+// Only groups (with their members) are stored — sufficient for client-side
+// transitive permission expansion.
+func (r *Repository) UpsertIdentity(workspace string, groups []databricks.Group) error {
+	b, err := json.Marshal(groups)
+	if err != nil {
+		return fmt.Errorf("marshal groups: %w", err)
+	}
+	_, err = r.db.Exec(`
+		INSERT INTO identity_cache (workspace, groups_json, fetched_at)
+		VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(workspace) DO UPDATE SET
+			groups_json = excluded.groups_json,
+			fetched_at  = excluded.fetched_at
+	`, workspace, string(b))
+	if err != nil {
+		return fmt.Errorf("upsert identity cache: %w", err)
+	}
+	return nil
+}
+
+// GetIdentityGroups returns cached groups for a workspace, or nil if not cached.
+func (r *Repository) GetIdentityGroups(workspace string) ([]databricks.Group, error) {
+	var raw string
+	err := r.db.QueryRow(
+		`SELECT groups_json FROM identity_cache WHERE workspace = ?`, workspace,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get identity cache: %w", err)
+	}
+	var groups []databricks.Group
+	if err := json.Unmarshal([]byte(raw), &groups); err != nil {
+		return nil, fmt.Errorf("unmarshal groups: %w", err)
+	}
+	return groups, nil
 }
 
 // GetClustersAsDomain returns cached clusters as domain types.

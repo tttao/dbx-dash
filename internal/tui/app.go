@@ -26,6 +26,7 @@ const (
 	screenWarehouses
 	screenIdentity
 	screenRunDetail
+	screenCatalogs
 )
 
 // tickMsg drives auto-refresh.
@@ -35,8 +36,9 @@ type tickMsg time.Time
 type Model struct {
 	cfg        *config.AppConfig
 	providers  map[string]*databricks.WorkspaceProviders
-	cacheRepo  *cache.Repository       // nil when cache is unavailable
+	cacheRepo  *cache.Repository        // nil when cache is unavailable
 	wsDataMode map[string]string        // workspace name -> "live" | "cached"
+	wsGroups   map[string][]databricks.Group // groups per workspace, for catalog grant expansion
 	screen     screenID
 	wsIdx      int
 	dashboard  screens.DashboardModel
@@ -45,6 +47,7 @@ type Model struct {
 	warehouses screens.WarehousesModel
 	identity   screens.IdentityModel
 	runDetail  screens.RunDetailModel
+	catalogs   screens.CatalogModel
 	spinner       spinner.Model
 	loading       bool
 	lastRefreshed time.Time
@@ -74,12 +77,14 @@ func NewModel(cfg *config.AppConfig, providers map[string]*databricks.WorkspaceP
 		providers:  providers,
 		cacheRepo:  cacheRepo,
 		wsDataMode: make(map[string]string),
+		wsGroups:   make(map[string][]databricks.Group),
 		screen:     screenDashboard,
 		dashboard:  screens.NewDashboardModel(wsNames, disabled),
-		jobs:       screens.NewJobsModel(),
+		jobs:       screens.NewJobsModel(cfg.JobsAgeDays),
 		clusters:   screens.NewClustersModel(),
 		warehouses: screens.NewWarehousesModel(),
 		identity:   screens.NewIdentityModel(),
+		catalogs:   screens.NewCatalogModel(),
 		spinner:    sp,
 		loading:    true,
 		interval:   interval,
@@ -93,6 +98,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		m.loadDashboard(),
+		m.loadAllIdentity(),
 		tickAfter(m.interval),
 	)
 }
@@ -107,10 +113,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.warehouses = m.warehouses.SetSize(msg.Width, msg.Height)
 		m.identity = m.identity.SetSize(msg.Width, msg.Height)
 		m.runDetail = m.runDetail.SetSize(msg.Width, msg.Height)
+		m.catalogs = m.catalogs.SetSize(msg.Width, msg.Height)
 		m.dashboard = m.dashboard.SetWidth(msg.Width)
 
 	case tickMsg:
-		return m, tea.Batch(m.loadDashboard(), tickAfter(m.interval))
+		m.loading = true
+		return m, tea.Batch(m.loadDashboard(), m.loadAllIdentity(), tickAfter(m.interval))
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -119,6 +127,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case screens.DashboardLoadedMsg:
 		m.lastRefreshed = time.Now()
+		m.loading = false
+
+	case screens.IdentityLoadedMsg:
+		// Cache groups for fast startup and catalog grant expansion.
+		if msg.Err == nil {
+			m.wsGroups[msg.Workspace] = msg.Groups
+			if m.cacheRepo != nil {
+				_ = m.cacheRepo.UpsertIdentity(msg.Workspace, msg.Groups)
+			}
+		}
+		// Always forward to catalog model (used for client-side grant expansion).
+		var c tea.Cmd
+		m.catalogs, c = m.catalogs.Update(msg)
+		if c != nil {
+			return m, tea.Batch(c) // identity screen dispatch happens below
+		}
 
 	case screens.JobsLoadedMsg:
 		if msg.FromCache {
@@ -148,10 +172,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case screens.LoadSchemasRequestMsg:
+		p := m.providers[msg.Workspace]
+		if p != nil && p.Catalog != nil {
+			return m, screens.LoadSchemasCmd(m.ctx, msg.Workspace, msg.CatalogName, p.Catalog)
+		}
+		return m, nil
+
+	case screens.LoadTablesRequestMsg:
+		p := m.providers[msg.Workspace]
+		if p != nil && p.Catalog != nil {
+			return m, screens.LoadTablesCmd(m.ctx, msg.Workspace, msg.CatalogName, msg.SchemaName, p.Catalog)
+		}
+		return m, nil
+
+	case screens.CatalogObjectDetailRequestMsg:
+		p := m.providers[msg.Workspace]
+		if p != nil && p.Catalog != nil {
+			return m, screens.LoadCatalogObjectDetailCmd(m.ctx, msg.Workspace, msg.Kind, msg.FullName, p.Catalog)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
-		// Global nav keys are suppressed when the identity search/popup is active.
+		// Global nav keys are suppressed when a search/popup is active.
 		identitySearchFocused := m.screen == screenIdentity && (m.identity.SearchFocused() || m.identity.PopupVisible())
-		if !identitySearchFocused {
+		catalogSearchFocused := m.screen == screenCatalogs && m.catalogs.SearchFocused()
+		if !identitySearchFocused && !catalogSearchFocused {
 			switch {
 			case key.Matches(msg, keys.Quit):
 				m.cancel()
@@ -170,12 +216,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, keys.Identity):
 				m.screen = screenIdentity
 				return m, m.loadIdentity()
+			case key.Matches(msg, keys.Catalogs):
+				ws := m.currentWS()
+				m.catalogs = m.catalogs.Reset(ws, m.wsGroups[ws])
+				m.screen = screenCatalogs
+				return m, m.loadCatalogs()
 			case key.Matches(msg, keys.Refresh):
+				m.loading = true
 				return m, m.refreshCurrentScreen()
 			case key.Matches(msg, keys.NextWS):
 				ws := m.cfg.VisibleWorkspaces()
 				if len(ws) > 0 {
 					m.wsIdx = (m.wsIdx + 1) % len(ws)
+					if m.screen == screenCatalogs {
+						newWS := ws[m.wsIdx].Name
+						m.catalogs = m.catalogs.Reset(newWS, m.wsGroups[newWS])
+						return m, m.loadCatalogs()
+					}
 				}
 			case key.Matches(msg, keys.Back):
 				if m.screen == screenRunDetail {
@@ -198,6 +255,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Delegate to sub-models.
+	// CatalogsLoadedMsg / SchemasLoadedMsg / TablesLoadedMsg are always
+	// forwarded to the catalog model regardless of active screen so lazy-load
+	// responses arrive even if the user briefly switched screens.
 	var cmd tea.Cmd
 	switch m.screen {
 	case screenDashboard:
@@ -212,7 +272,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.identity, cmd = m.identity.Update(msg)
 	case screenRunDetail:
 		m.runDetail, cmd = m.runDetail.Update(msg)
+	case screenCatalogs:
+		m.catalogs, cmd = m.catalogs.Update(msg)
 	}
+
+	// Always forward catalog data messages to the catalog model.
+	switch msg.(type) {
+	case screens.CatalogsLoadedMsg, screens.SchemasLoadedMsg, screens.TablesLoadedMsg,
+		screens.CatalogObjectDetailLoadedMsg:
+		if m.screen != screenCatalogs {
+			var c tea.Cmd
+			m.catalogs, c = m.catalogs.Update(msg)
+			if c != nil {
+				cmd = tea.Batch(cmd, c)
+			}
+		}
+	}
+
 	return m, cmd
 }
 
@@ -232,6 +308,8 @@ func (m Model) View() string {
 		body = m.identity.View()
 	case screenRunDetail:
 		body = m.runDetail.View()
+	case screenCatalogs:
+		body = m.catalogs.View()
 	}
 	help := m.renderHelp()
 	return header + "\n" + body + "\n" + help
@@ -242,8 +320,12 @@ func (m Model) renderHeader() string {
 	ws := m.currentWorkspaceName()
 	wsBar := styleWorkspaceBar.Render(fmt.Sprintf("◀  %s  ▶", ws))
 	var status string
-	if m.lastRefreshed.IsZero() {
-		status = m.spinner.View() + " loading…"
+	if m.loading {
+		if m.lastRefreshed.IsZero() {
+			status = m.spinner.View() + " loading…"
+		} else {
+			status = m.spinner.View() + " refreshing…"
+		}
 	} else {
 		status = "last refreshed: " + m.lastRefreshed.Format("15:04:05")
 	}
@@ -259,8 +341,16 @@ func (m Model) renderHeader() string {
 
 // renderHelp renders the bottom keybinding bar.
 func (m Model) renderHelp() string {
-	hints := []string{"1 Dashboard", "2 Jobs", "3 Clusters", "4 Warehouses", "5 Identity", "r Refresh", "w Workspace", "q Quit"}
+	hints := []string{"1 Dashboard", "2 Jobs", "3 Clusters", "4 Warehouses", "5 Identity", "6 Catalogs", "r Refresh", "w Workspace", "q Quit"}
 	return styleHelp.Width(m.width).Render(strings.Join(hints, "  "))
+}
+
+func (m Model) currentWS() string {
+	ws := m.cfg.VisibleWorkspaces()
+	if len(ws) == 0 {
+		return ""
+	}
+	return ws[m.wsIdx%len(ws)].Name
 }
 
 func (m Model) currentWorkspaceName() string {
@@ -315,20 +405,46 @@ func (m Model) loadIdentity() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// loadAllIdentity fetches groups+users+SPs for every workspace in the background.
+// Results are forwarded to the identity screen and catalog model automatically.
+func (m Model) loadAllIdentity() tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(m.providers))
+	for ws, p := range m.providers {
+		cmds = append(cmds, screens.LoadIdentityCmd(m.ctx, ws, p))
+	}
+	return tea.Batch(cmds...)
+}
+
+func (m Model) loadCatalogs() tea.Cmd {
+	ws := m.currentWS()
+	p := m.providers[ws]
+	if p == nil || p.Catalog == nil {
+		return nil
+	}
+	return screens.LoadCatalogsCmd(m.ctx, ws, p.Catalog)
+}
+
 func (m Model) refreshCurrentScreen() tea.Cmd {
+	// Identity hierarchy is always refreshed (needed by all screens).
+	identityRefresh := m.loadAllIdentity()
+	var screenRefresh tea.Cmd
 	switch m.screen {
 	case screenDashboard:
-		return m.loadDashboard()
+		screenRefresh = m.loadDashboard()
 	case screenJobs:
-		return m.loadJobs()
+		screenRefresh = m.loadJobs()
 	case screenClusters:
-		return m.loadClusters()
+		screenRefresh = m.loadClusters()
 	case screenWarehouses:
-		return m.loadWarehouses()
+		screenRefresh = m.loadWarehouses()
 	case screenIdentity:
-		return m.loadIdentity()
+		screenRefresh = m.loadIdentity()
+	case screenCatalogs:
+		ws := m.currentWS()
+		m.catalogs = m.catalogs.Reset(ws, m.wsGroups[ws])
+		screenRefresh = m.loadCatalogs()
 	}
-	return nil
+	return tea.Batch(identityRefresh, screenRefresh)
 }
 
 func tickAfter(d time.Duration) tea.Cmd {

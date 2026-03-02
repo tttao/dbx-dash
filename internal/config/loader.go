@@ -24,7 +24,8 @@ func Load() (*AppConfig, error) {
 			DefaultInterval: defaultInterval,
 			AlertOnFailure:  true,
 		},
-		DBPath: defaultDBPath,
+		DBPath:      defaultDBPath,
+		JobsAgeDays: 1,
 	}
 
 	if err := loadDatabricksCfg(cfg); err != nil {
@@ -91,7 +92,8 @@ type tomlOverlay struct {
 		DefaultInterval int  `toml:"default_interval"`
 		AlertOnFailure  bool `toml:"alert_on_failure"`
 	} `toml:"refresh"`
-	DBPath string `toml:"db_path"`
+	DBPath      string `toml:"db_path"`
+	JobsAgeDays int    `toml:"jobs_age_days"`
 }
 
 // loadDbxDashConfig applies optional overrides from ~/.dbx-dash/config.toml.
@@ -108,6 +110,9 @@ func loadDbxDashConfig(cfg *AppConfig) error {
 	cfg.Refresh.AlertOnFailure = overlay.Refresh.AlertOnFailure
 	if overlay.DBPath != "" {
 		cfg.DBPath = overlay.DBPath
+	}
+	if overlay.JobsAgeDays >= 0 {
+		cfg.JobsAgeDays = overlay.JobsAgeDays
 	}
 
 	// Build a lookup map for existing workspaces by name.

@@ -30,6 +30,16 @@ type PipelinesProvider interface {
 	ListPipelineUpdates(ctx context.Context, pipelineID string, limit int) ([]PipelineUpdate, error)
 }
 
+// CatalogProvider is the interface for Unity Catalog browse operations.
+type CatalogProvider interface {
+	ListCatalogs(ctx context.Context) ([]CatalogInfo, error)
+	ListSchemas(ctx context.Context, catalogName string) ([]SchemaInfo, error)
+	ListTables(ctx context.Context, catalogName, schemaName string) ([]TableInfo, error)
+	// GetObjectDetail fetches full metadata and permission hierarchy for a UC object.
+	// kind is "catalog", "schema", or "table". fullName is the dot-separated path.
+	GetObjectDetail(ctx context.Context, kind, fullName string) (*ObjectDetail, error)
+}
+
 // IdentityProvider is the interface for workspace-level identity (SCIM) operations.
 // Requires workspace admin access; no account admin needed.
 type IdentityProvider interface {

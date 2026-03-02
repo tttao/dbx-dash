@@ -9,6 +9,7 @@ type keyMap struct {
 	Clusters   key.Binding
 	Warehouses key.Binding
 	Identity   key.Binding
+	Catalogs   key.Binding
 	Refresh    key.Binding
 	NextWS     key.Binding
 	Select     key.Binding
@@ -36,6 +37,10 @@ var keys = keyMap{
 	Identity: key.NewBinding(
 		key.WithKeys("5"),
 		key.WithHelp("5", "identity"),
+	),
+	Catalogs: key.NewBinding(
+		key.WithKeys("6"),
+		key.WithHelp("6", "catalogs"),
 	),
 	Refresh: key.NewBinding(
 		key.WithKeys("r"),
