@@ -2,6 +2,8 @@
 
 Terminal dashboard for monitoring Databricks workspaces, written in Go.
 
+![dbx-dash screenshot](docs/Screenshot%202026-03-02%20at%2012.16.07.png)
+
 ```
 ┌─ dbx-dash v0.2.0 ──────────────────────────────────────── 14:23:01 ─┐
 │ Workspace: ◀  production  ▶                          ⟳ refreshing…  │

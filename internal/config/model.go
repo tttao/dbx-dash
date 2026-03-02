@@ -35,6 +35,7 @@ type AppConfig struct {
 	Refresh          RefreshConfig
 	DBPath           string
 	ActiveWorkspaces []string // filter; nil = all
+	JobsAgeDays      int      // filter jobs by last-run recency; 0 = show all
 }
 
 // GetWorkspace returns the profile with the given name, or nil.

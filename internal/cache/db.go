@@ -13,9 +13,13 @@ import (
 	_ "modernc.org/sqlite" // register sqlite3 driver
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
-const schema = `
+// migrations is the ordered list of DDL steps, one per schema version.
+// Index 0 = v1, index 1 = v2, etc.
+var migrations = []string{
+	// v1 — jobs and clusters
+	`
 CREATE TABLE IF NOT EXISTS job_snapshots (
     workspace      TEXT NOT NULL,
     job_id         INTEGER NOT NULL,
@@ -36,8 +40,15 @@ CREATE TABLE IF NOT EXISTS cluster_snapshots (
     num_workers  INTEGER NOT NULL DEFAULT 0,
     fetched_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (workspace, cluster_id)
-);
-`
+);`,
+	// v2 — workspace identity (groups with members, users, service principals)
+	`
+CREATE TABLE IF NOT EXISTS identity_cache (
+    workspace   TEXT NOT NULL PRIMARY KEY,
+    groups_json TEXT NOT NULL DEFAULT '[]',
+    fetched_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`,
+}
 
 // Open opens (or creates) the SQLite database at the given path, initialising
 // the schema if needed. Use "~" prefix for home-relative paths.
@@ -62,14 +73,15 @@ func Open(path string) (*sql.DB, error) {
 func migrate(db *sql.DB) error {
 	var ver int
 	_ = db.QueryRow("PRAGMA user_version").Scan(&ver)
-	if ver >= schemaVersion {
-		return nil
-	}
-	if _, err := db.Exec(schema); err != nil {
-		return fmt.Errorf("create schema: %w", err)
-	}
-	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
-		return fmt.Errorf("set schema version: %w", err)
+	for ver < schemaVersion {
+		step := migrations[ver] // ver is 0-based index into migrations
+		if _, err := db.Exec(step); err != nil {
+			return fmt.Errorf("migrate to v%d: %w", ver+1, err)
+		}
+		ver++
+		if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", ver)); err != nil {
+			return fmt.Errorf("set schema version %d: %w", ver, err)
+		}
 	}
 	return nil
 }

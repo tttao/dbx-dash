@@ -42,6 +42,7 @@ func (f *WorkspaceClientFactory) GetProviders(p config.WorkspaceProfile) (*datab
 		Warehouses:    &SDKWarehousesProvider{client: client},
 		Pipelines:     &SDKPipelinesProvider{client: client},
 		Identity:      &SDKIdentityProvider{client: client},
+		Catalog:       &SDKCatalogProvider{client: client},
 	}, nil
 }
 

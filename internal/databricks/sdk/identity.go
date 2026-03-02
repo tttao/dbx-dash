@@ -204,7 +204,11 @@ func scimComplexDisplays(vals []iam.ComplexValue) []string {
 // memberTypeFromRef resolves the member type from the SCIM $ref URL or the
 // explicit type field. The $ref typically looks like "../Users/123" or
 // "../Groups/456" or "../ServicePrincipals/789".
+// Databricks SCIM uses "subgroup" for nested groups; normalise to "Group".
 func memberTypeFromRef(ref, explicit string) string {
+	if strings.EqualFold(explicit, "subgroup") {
+		return "Group"
+	}
 	if explicit != "" {
 		return explicit
 	}

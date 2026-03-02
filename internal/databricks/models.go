@@ -168,6 +168,61 @@ type SPDetail struct {
 	AccessControl      []SPAccessEntry // workspace-level permission ACL; nil = API not supported
 }
 
+// CatalogInfo represents a Unity Catalog catalog.
+type CatalogInfo struct {
+	Name    string
+	Comment string
+	Owner   string
+}
+
+// SchemaInfo represents a Unity Catalog schema.
+type SchemaInfo struct {
+	FullName    string // "catalog.schema"
+	Name        string
+	CatalogName string
+	Owner       string
+}
+
+// TableInfo represents a Unity Catalog table or view.
+type TableInfo struct {
+	FullName    string // "catalog.schema.table"
+	Name        string
+	SchemaName  string
+	CatalogName string
+	// TableType: TABLE, VIEW, MATERIALIZED_VIEW, STREAMING_TABLE, etc.
+	TableType string
+	Owner     string
+}
+
+// GrantEntry is a single principal's direct grant on a Unity Catalog securable.
+// Via is non-empty for entries added by client-side group expansion (indirect access).
+type GrantEntry struct {
+	Principal  string
+	Privileges []string
+	Via        string // display name of the group that grants this access indirectly; "" = direct
+}
+
+// ObjectDetail holds the full metadata and permission hierarchy for a
+// Unity Catalog object (catalog, schema, or table).
+type ObjectDetail struct {
+	Kind            string // "catalog", "schema", "table"
+	FullName        string
+	Name            string
+	Owner           string
+	Comment         string
+	StorageLocation string
+	StorageRoot     string // catalogs and schemas
+	DataFormat      string // tables: DELTA, PARQUET, CSV, etc.
+	TableType       string // TABLE, VIEW, MATERIALIZED_VIEW, etc.
+	ViewDefinition  string // views only
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	// Grants hierarchy (nil = not applicable or not fetched).
+	DirectGrants  []GrantEntry // grants on this object
+	ParentGrants  []GrantEntry // schema grants (tables only)
+	GrandpaGrants []GrantEntry // catalog grants (tables and schemas)
+}
+
 // WorkspaceProviders bundles all providers for a single workspace.
 type WorkspaceProviders struct {
 	WorkspaceName string
@@ -176,4 +231,5 @@ type WorkspaceProviders struct {
 	Warehouses    WarehousesProvider
 	Pipelines     PipelinesProvider
 	Identity      IdentityProvider
+	Catalog       CatalogProvider
 }

@@ -23,3 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Terminal bell + visual flash alerts on job failures
 - Protocol-based API layer for full testability
 - `dbx-dash run`, `dbx-dash config list`, `dbx-dash config check` CLI commands
+
+### Dependencies
+- Built on [databricks-sdk-go v0.55.0](https://github.com/databricks/databricks-sdk-go)

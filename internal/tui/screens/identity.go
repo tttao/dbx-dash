@@ -125,12 +125,6 @@ type treeItem struct {
 	entityID    string // SCIM ID for user or SP (used for transitive group lookup)
 }
 
-// popupContent holds pre-rendered text for the detail popup.
-type popupContent struct {
-	title string
-	body  string
-}
-
 // IdentityModel is the Bubble Tea model for the identity screen.
 type IdentityModel struct {
 	workspaces []wsIdentityData // ordered list, one entry per workspace
@@ -148,14 +142,15 @@ type IdentityModel struct {
 
 	treeView bool // main view: false = list (default), true = group hierarchy tree
 
-	popup           *popupContent
-	popupLoading    bool
-	popupWsName     string // workspace of entity shown in popup (for transitive lookup)
-	popupEntityID   string // stored for refresh
-	popupEntityType string // "user" | "sp"
-	popupGroupTree  bool   // popup group section: false = flat, true = ancestry tree
-	popupUserDetail *databricks.UserDetail
-	popupSPDetail   *databricks.SPDetail
+	// Detail panel (right side, like catalog screen).
+	detailVP      viewport.Model
+	detailLoading bool
+	detailWsName  string // workspace of entity shown in detail panel
+	detailEntityID   string // stored for refresh
+	detailEntityType string // "user" | "sp"
+	detailGroupTree  bool   // detail group section: false = flat, true = ancestry tree
+	detailUserDetail *databricks.UserDetail
+	detailSPDetail   *databricks.SPDetail
 }
 
 func NewIdentityModel() IdentityModel {
@@ -164,12 +159,14 @@ func NewIdentityModel() IdentityModel {
 	ti.CharLimit = 80
 
 	vp := viewport.New(80, 20)
+	dvp := viewport.New(80, 20)
 
 	return IdentityModel{
 		wsIndex:  make(map[string]int),
 		expanded: make(map[string]bool),
 		search:   ti,
 		viewport: vp,
+		detailVP: dvp,
 	}
 }
 
@@ -178,17 +175,37 @@ func (m IdentityModel) SearchFocused() bool {
 	return m.search.Focused()
 }
 
-// PopupVisible returns true when the detail popup is open or loading.
+// PopupVisible returns true when a detail panel is open or loading.
+// Kept for app.go compatibility (suppresses global nav keys while detail is focused).
 func (m IdentityModel) PopupVisible() bool {
-	return m.popup != nil || m.popupLoading
+	return m.detailEntityID != "" || m.detailLoading
+}
+
+func (m IdentityModel) panelDims() (leftW, rightW, visH int) {
+	visH = m.height - 6
+	if visH < 4 {
+		visH = 4
+	}
+	leftW = m.width * 40 / 100
+	if leftW < 20 {
+		leftW = 20
+	}
+	rightW = m.width - leftW - 1
+	if rightW < 20 {
+		rightW = 20
+	}
+	return
 }
 
 func (m IdentityModel) SetSize(w, h int) IdentityModel {
 	m.width = w
 	m.height = h
-	m.viewport.Width = w
-	m.viewport.Height = h - 6
-	m.search.Width = w - 12
+	leftW, rightW, visH := m.panelDims()
+	m.viewport.Width = leftW
+	m.viewport.Height = visH
+	m.detailVP = viewport.New(rightW, visH)
+	m.detailVP.SetContent(m.renderDetailContent())
+	m.search.Width = leftW - 12
 	m = m.rebuild()
 	return m
 }
@@ -218,33 +235,43 @@ func (m IdentityModel) Update(msg tea.Msg) (IdentityModel, tea.Cmd) {
 		m = m.rebuild()
 
 	case UserDetailLoadedMsg:
-		m.popupLoading = false
+		m.detailLoading = false
 		if v.Err != nil {
-			m.popup = &popupContent{title: "Error", body: styleIdentityErr.Render(v.Err.Error())}
-			m.popupUserDetail = nil
+			m.detailUserDetail = nil
+			m.detailSPDetail = nil
+			m.detailVP.SetContent(styleIdentityErr.Render("  Error: " + v.Err.Error()))
+			m.detailVP.GotoTop()
 		} else if v.Detail != nil {
-			m.popupUserDetail = v.Detail
-			m.popupSPDetail = nil
-			m = m.rerenderPopup()
+			m.detailUserDetail = v.Detail
+			m.detailSPDetail = nil
+			m = m.rerenderDetail()
 		}
 
 	case SPDetailLoadedMsg:
-		m.popupLoading = false
+		m.detailLoading = false
 		if v.Err != nil {
-			m.popup = &popupContent{title: "Error", body: styleIdentityErr.Render(v.Err.Error())}
-			m.popupSPDetail = nil
+			m.detailSPDetail = nil
+			m.detailUserDetail = nil
+			m.detailVP.SetContent(styleIdentityErr.Render("  Error: " + v.Err.Error()))
+			m.detailVP.GotoTop()
 		} else if v.Detail != nil {
-			m.popupSPDetail = v.Detail
-			m.popupUserDetail = nil
-			m = m.rerenderPopup()
+			m.detailSPDetail = v.Detail
+			m.detailUserDetail = nil
+			m = m.rerenderDetail()
 		}
 
 	case tea.KeyMsg:
-		// Esc: close popup first, then clear search.
-		if v.String() == "esc" {
-			if m.popup != nil || m.popupLoading {
-				m.popup = nil
-				m.popupLoading = false
+		switch v.String() {
+		case "esc":
+			if m.detailEntityID != "" || m.detailLoading {
+				// Close detail panel.
+				m.detailLoading = false
+				m.detailEntityID = ""
+				m.detailEntityType = ""
+				m.detailWsName = ""
+				m.detailUserDetail = nil
+				m.detailSPDetail = nil
+				m.detailVP.SetContent(m.renderDetailContent())
 				return m, nil
 			}
 			if m.search.Focused() {
@@ -253,44 +280,35 @@ func (m IdentityModel) Update(msg tea.Msg) (IdentityModel, tea.Cmd) {
 				m = m.rebuild()
 				return m, nil
 			}
-		}
-
-		// While popup is showing, handle t/r and close keys.
-		if m.popup != nil || m.popupLoading {
-			switch v.String() {
-			case "t":
-				if !m.popupLoading {
-					m.popupGroupTree = !m.popupGroupTree
-					m = m.rerenderPopup()
+		case "t":
+			if !m.search.Focused() {
+				if m.detailEntityID != "" && !m.detailLoading {
+					// Toggle group ancestry view in detail panel.
+					m.detailGroupTree = !m.detailGroupTree
+					m = m.rerenderDetail()
+				} else {
+					// Toggle list/tree main view.
+					m.treeView = !m.treeView
+					m = m.rebuild()
 				}
-			case "r":
-				if !m.popupLoading && m.popupEntityID != "" {
-					m.popupLoading = true
-					m.popup = nil
-					m.popupUserDetail = nil
-					m.popupSPDetail = nil
-					wsName, entityID, entityType := m.popupWsName, m.popupEntityID, m.popupEntityType
-					if entityType == "user" {
-						return m, func() tea.Msg {
-							return LoadUserDetailRequestMsg{Workspace: wsName, UserID: entityID}
-						}
-					}
-					return m, func() tea.Msg {
-						return LoadSPDetailRequestMsg{Workspace: wsName, SPID: entityID}
-					}
-				}
-			case "esc", "enter", " ", "q":
-				m.popup = nil
-				m.popupLoading = false
-				m.popupUserDetail = nil
-				m.popupSPDetail = nil
-				m.popupEntityID = ""
-				m.popupEntityType = ""
+				return m, nil
 			}
-			return m, nil
-		}
-
-		switch v.String() {
+		case "r":
+			if !m.search.Focused() && !m.detailLoading && m.detailEntityID != "" {
+				m.detailLoading = true
+				m.detailUserDetail = nil
+				m.detailSPDetail = nil
+				m.detailVP.SetContent(styleIdentityMuted.Render("  Loading details…"))
+				wsName, entityID, entityType := m.detailWsName, m.detailEntityID, m.detailEntityType
+				if entityType == "user" {
+					return m, func() tea.Msg {
+						return LoadUserDetailRequestMsg{Workspace: wsName, UserID: entityID}
+					}
+				}
+				return m, func() tea.Msg {
+					return LoadSPDetailRequestMsg{Workspace: wsName, SPID: entityID}
+				}
+			}
 		case "/":
 			if !m.search.Focused() {
 				m.search.Focus()
@@ -324,31 +342,64 @@ func (m IdentityModel) Update(msg tea.Msg) (IdentityModel, tea.Cmd) {
 					m.expanded[item.groupKey] = !m.expanded[item.groupKey]
 					m = m.rebuild()
 				case item.isUser:
-					m.popupLoading = true
-					m.popupWsName = item.wsName
-					m.popupEntityID = item.entityID
-					m.popupEntityType = "user"
-					m.popupGroupTree = false
+					m.detailLoading = true
+					m.detailWsName = item.wsName
+					m.detailEntityID = item.entityID
+					m.detailEntityType = "user"
+					m.detailGroupTree = false
+					m.detailVP.SetContent(styleIdentityMuted.Render("  Loading details…"))
 					return m, func() tea.Msg {
 						return LoadUserDetailRequestMsg{Workspace: item.wsName, UserID: item.entityID}
 					}
 				case item.isSP:
-					m.popupLoading = true
-					m.popupWsName = item.wsName
-					m.popupEntityID = item.entityID
-					m.popupEntityType = "sp"
-					m.popupGroupTree = false
+					m.detailLoading = true
+					m.detailWsName = item.wsName
+					m.detailEntityID = item.entityID
+					m.detailEntityType = "sp"
+					m.detailGroupTree = false
+					m.detailVP.SetContent(styleIdentityMuted.Render("  Loading details…"))
 					return m, func() tea.Msg {
 						return LoadSPDetailRequestMsg{Workspace: item.wsName, SPID: item.entityID}
 					}
 				}
 				return m, nil
 			}
-		// Toggle list/tree view.
-		case "t":
-			if !m.search.Focused() {
-				m.treeView = !m.treeView
-				m = m.rebuild()
+		case "right", "l":
+			if !m.search.Focused() && m.cursor < len(m.items) {
+				item := m.items[m.cursor]
+				switch {
+				case item.isWorkspace:
+					key := "ws:" + item.wsName
+					m.expanded[key] = true
+					m = m.rebuild()
+				case item.isGroup:
+					// Load group detail in right panel.
+					m.detailEntityID = item.entityID
+					m.detailEntityType = "group"
+					m.detailWsName = item.wsName
+					m.detailGroupTree = false
+					m = m.rerenderDetail()
+				case item.isUser:
+					m.detailLoading = true
+					m.detailWsName = item.wsName
+					m.detailEntityID = item.entityID
+					m.detailEntityType = "user"
+					m.detailGroupTree = false
+					m.detailVP.SetContent(styleIdentityMuted.Render("  Loading details…"))
+					return m, func() tea.Msg {
+						return LoadUserDetailRequestMsg{Workspace: item.wsName, UserID: item.entityID}
+					}
+				case item.isSP:
+					m.detailLoading = true
+					m.detailWsName = item.wsName
+					m.detailEntityID = item.entityID
+					m.detailEntityType = "sp"
+					m.detailGroupTree = false
+					m.detailVP.SetContent(styleIdentityMuted.Render("  Loading details…"))
+					return m, func() tea.Msg {
+						return LoadSPDetailRequestMsg{Workspace: item.wsName, SPID: item.entityID}
+					}
+				}
 				return m, nil
 			}
 		}
@@ -370,27 +421,29 @@ func (m IdentityModel) Update(msg tea.Msg) (IdentityModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
+	m.detailVP, cmd = m.detailVP.Update(msg)
+	cmds = append(cmds, cmd)
 	return m, tea.Batch(cmds...)
 }
 
-// wsGroups returns the groups slice for the workspace currently shown in the popup.
+// wsGroups returns the groups slice for the workspace currently shown in the detail panel.
 func (m IdentityModel) wsGroups() []databricks.Group {
-	if m.popupWsName == "" {
+	if m.detailWsName == "" {
 		return nil
 	}
-	idx, ok := m.wsIndex[m.popupWsName]
+	idx, ok := m.wsIndex[m.detailWsName]
 	if !ok {
 		return nil
 	}
 	return m.workspaces[idx].groups
 }
 
-// wsData returns the full wsIdentityData for the workspace currently shown in the popup.
+// wsData returns the full wsIdentityData for the workspace currently shown in the detail panel.
 func (m IdentityModel) wsData() *wsIdentityData {
-	if m.popupWsName == "" {
+	if m.detailWsName == "" {
 		return nil
 	}
-	idx, ok := m.wsIndex[m.popupWsName]
+	idx, ok := m.wsIndex[m.detailWsName]
 	if !ok {
 		return nil
 	}
@@ -506,6 +559,9 @@ func (m IdentityModel) View() string {
 		return styleIdentityErr.Render("  Error: "+m.err.Error()) + "\n"
 	}
 
+	leftW, rightW, visH := m.panelDims()
+
+	// ── search bar ────────────────────────────────────────────────────────────
 	var searchLine string
 	if m.search.Focused() {
 		searchLine = styleIdentitySearchActive.Render(" / ") + " " + m.search.View()
@@ -529,41 +585,186 @@ func (m IdentityModel) View() string {
 		viewMode = styleIdentitySection.Render("[tree]")
 	}
 
-	if m.popupLoading || m.popup != nil {
-		popupView := m.renderPopup()
-		help := styleIdentityMuted.Render("  t groups   r refresh   esc / enter  close")
-		return searchLine + "\n" + stats + "  " + viewMode + "\n" + popupView + "\n" + help
+	// ── left panel: search + stats + tree ─────────────────────────────────────
+	leftHeader := searchLine + "\n" + stats + "  " + viewMode + "\n"
+	leftPanel := leftHeader + m.viewport.View()
+
+	// ── right panel: detail viewport ──────────────────────────────────────────
+	m.detailVP.Width = rightW
+	m.detailVP.Height = visH
+	rightPanel := m.detailVP.View()
+
+	// Pad right panel to full height.
+	rightLines := strings.Count(rightPanel, "\n") + 1
+	if rightLines < visH {
+		rightPanel += strings.Repeat("\n", visH-rightLines)
 	}
 
-	help := styleIdentityMuted.Render("  / search   ↑↓ navigate   enter expand/details   t toggle view   esc clear")
-	return searchLine + "\n" + stats + "  " + viewMode + "\n" + m.viewport.View() + "\n" + help
+	// ── separator ─────────────────────────────────────────────────────────────
+	sepLines := make([]string, visH)
+	for i := range sepLines {
+		sepLines[i] = "│"
+	}
+	sep := styleIdentityMuted.Render(strings.Join(sepLines, "\n"))
+
+	body := lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(leftW).Render(leftPanel),
+		sep,
+		lipgloss.NewStyle().Width(rightW).Render(rightPanel),
+	)
+
+	var help string
+	if m.detailEntityID != "" || m.detailLoading {
+		help = styleIdentityMuted.Render("  t groups   r refresh   esc close detail")
+	} else {
+		help = styleIdentityMuted.Render("  / search   ↑↓ navigate   enter/→ details   t toggle view   esc clear")
+	}
+	return body + "\n" + help
 }
 
-func (m IdentityModel) renderPopup() string {
-	popupWidth := 68
-	if m.width > 0 && popupWidth > m.width-4 {
-		popupWidth = m.width - 4
+// renderDetailContent builds the text content for the detail viewport.
+func (m IdentityModel) renderDetailContent() string {
+	if m.detailLoading {
+		return styleIdentityMuted.Render("  Loading details…")
+	}
+	if m.detailEntityID == "" {
+		return styleIdentityMuted.Render("  Select a user, group, or service principal and press → to view details")
+	}
+	if m.detailEntityType == "group" {
+		return m.renderGroupDetail()
+	}
+	if m.detailUserDetail != nil {
+		u := m.detailUserDetail
+		direct, indirect := transitiveGroupLookup(u.ID, m.wsGroups())
+		if len(direct) == 0 && len(u.Groups) > 0 {
+			direct = u.Groups
+		}
+		var groupSection string
+		if m.detailGroupTree {
+			groupSection = renderGroupAncestryTree(u.ID, m.wsGroups())
+		} else {
+			groupSection = popupGroupSection(direct, indirect)
+		}
+		if wsD := m.wsData(); wsD != nil {
+			u.SPAccess = computeUserSPAccess(u.ID, *wsD)
+		}
+		title := styleIdentityWSName.Render("User: "+u.UserName) + "\n\n"
+		return title + renderUserDetailPopup(u, groupSection)
+	}
+	if m.detailSPDetail != nil {
+		sp := m.detailSPDetail
+		direct, indirect := transitiveGroupLookup(sp.ID, m.wsGroups())
+		if len(direct) == 0 && len(sp.Groups) > 0 {
+			direct = sp.Groups
+		}
+		var groupSection string
+		if m.detailGroupTree {
+			groupSection = renderGroupAncestryTree(sp.ID, m.wsGroups())
+		} else {
+			groupSection = popupGroupSection(direct, indirect)
+		}
+		title := styleIdentityWSName.Render("Service principal: "+sp.DisplayName) + "\n\n"
+		return title + renderSPDetailPopup(sp, groupSection)
+	}
+	return styleIdentityMuted.Render("  No detail available")
+}
+
+// renderGroupDetail builds the detail panel content for a group.
+// All data comes from already-loaded workspace identity data — no extra API calls.
+func (m IdentityModel) renderGroupDetail() string {
+	wsD := m.wsData()
+	if wsD == nil {
+		return styleIdentityMuted.Render("  No workspace data available")
 	}
 
-	var inner string
-	if m.popupLoading {
-		inner = styleIdentityMuted.Render("Loading details…")
-	} else if m.popup != nil {
-		title := styleIdentityWSName.Render(m.popup.title)
-		inner = title + "\n\n" + m.popup.body
+	// Find the group.
+	var group *databricks.Group
+	for i := range wsD.groups {
+		if wsD.groups[i].ID == m.detailEntityID {
+			group = &wsD.groups[i]
+			break
+		}
+	}
+	if group == nil {
+		return styleIdentityMuted.Render("  Group not found")
 	}
 
-	box := stylePopupBox.Width(popupWidth).Render(inner)
+	// Build ID-based lookups.
+	groupByID := make(map[string]databricks.Group, len(wsD.groups))
+	for _, g := range wsD.groups {
+		groupByID[g.ID] = g
+	}
+	userByID := make(map[string]databricks.IdentityUser, len(wsD.users))
+	for _, u := range wsD.users {
+		userByID[u.ID] = u
+	}
+	spByID := make(map[string]databricks.WorkspaceServicePrincipal, len(wsD.sps))
+	for _, sp := range wsD.sps {
+		spByID[sp.ID] = sp
+	}
 
-	leftPad := (m.width - lipgloss.Width(box)) / 2
-	if leftPad < 0 {
-		leftPad = 0
+	// Parent groups: which workspace groups contain this group as a member.
+	var parentGroups []string
+	for _, g := range wsD.groups {
+		for _, m := range g.Members {
+			if m.ID == group.ID {
+				parentGroups = append(parentGroups, g.DisplayName)
+				break
+			}
+		}
 	}
-	lines := strings.Split(box, "\n")
-	for i, line := range lines {
-		lines[i] = strings.Repeat(" ", leftPad) + line
+	sort.Strings(parentGroups)
+
+	var b strings.Builder
+
+	title := styleIdentityWSName.Render(group.DisplayName) + "  " +
+		styleIdentityMuted.Render(fmt.Sprintf("(%d members)", len(group.Members)))
+	b.WriteString(title + "\n\n")
+	b.WriteString(popupRow("SCIM ID", group.ID))
+	b.WriteString("\n")
+
+	// Members.
+	b.WriteString(styleIdentitySection.Render("MEMBERS") + "\n")
+	if len(group.Members) == 0 {
+		b.WriteString("  " + styleIdentityMuted.Render("(no members)") + "\n")
+	} else {
+		for _, mem := range group.Members {
+			displayName := mem.DisplayName
+			resolvedType := mem.Type
+			if child, ok := groupByID[mem.ID]; ok {
+				resolvedType = "Group"
+				if displayName == "" {
+					displayName = child.DisplayName
+				}
+			} else if u, ok := userByID[mem.ID]; ok {
+				resolvedType = "User"
+				if displayName == "" {
+					displayName = u.UserName
+				}
+			} else if sp, ok := spByID[mem.ID]; ok {
+				resolvedType = "ServicePrincipal"
+				if displayName == "" {
+					displayName = sp.DisplayName
+				}
+			}
+			b.WriteString("  " + memberNameStyle(resolvedType).Render(displayName) +
+				"  " + memberTypeTag(resolvedType) + "\n")
+		}
 	}
-	return strings.Join(lines, "\n")
+	b.WriteString("\n")
+
+	// Parent groups.
+	b.WriteString(styleIdentitySection.Render("PARENT GROUPS") + "\n")
+	if len(parentGroups) == 0 {
+		b.WriteString("  " + styleIdentityMuted.Render("(not a member of any workspace group)") + "\n")
+	} else {
+		for _, pg := range parentGroups {
+			b.WriteString("  " + styleIdentityUser.Render("●") + " " +
+				styleIdentityGroupName.Render(pg) + "\n")
+		}
+	}
+
+	return b.String()
 }
 
 // transitiveGroupLookup computes direct and indirect (transitive) group memberships
@@ -826,7 +1027,7 @@ func buildWorkspaceItems(
 				label := "    " + styleIdentityGroupArrow.Render(arrow) + " " +
 					styleIdentityGroupName.Render(g.DisplayName) + " " +
 					styleIdentityMuted.Render(fmt.Sprintf("(%d)", len(g.Members)))
-				items = append(items, treeItem{line: label, isGroup: true, groupKey: groupKey})
+				items = append(items, treeItem{line: label, isGroup: true, groupKey: groupKey, wsName: ws.name, entityID: g.ID})
 				if grpExpanded {
 					for i, mem := range g.Members {
 						displayName := mem.DisplayName
@@ -1045,54 +1246,17 @@ var (
 	styleIdentityTagUser      = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	styleIdentityTagSP        = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	styleIdentityTagGroup     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	stylePopupBox             = lipgloss.NewStyle().
-					Border(lipgloss.RoundedBorder()).
-					BorderForeground(lipgloss.Color("33")).
-					Padding(1, 2)
 )
 
 // ---------------------------------------------------------------------------
-// rerenderPopup re-builds popup content from stored raw detail.
+// rerenderDetail re-builds detail viewport content from stored raw detail.
 // Called when data arrives or when the user toggles the group tree view.
 // ---------------------------------------------------------------------------
 
-func (m IdentityModel) rerenderPopup() IdentityModel {
-	if m.popupUserDetail != nil {
-		u := m.popupUserDetail
-		direct, indirect := transitiveGroupLookup(u.ID, m.wsGroups())
-		if len(direct) == 0 && len(u.Groups) > 0 {
-			direct = u.Groups
-		}
-		var groupSection string
-		if m.popupGroupTree {
-			groupSection = renderGroupAncestryTree(u.ID, m.wsGroups())
-		} else {
-			groupSection = popupGroupSection(direct, indirect)
-		}
-		if wsD := m.wsData(); wsD != nil {
-			u.SPAccess = computeUserSPAccess(u.ID, *wsD)
-		}
-		m.popup = &popupContent{
-			title: "User: " + u.UserName,
-			body:  renderUserDetailPopup(u, groupSection),
-		}
-	} else if m.popupSPDetail != nil {
-		sp := m.popupSPDetail
-		direct, indirect := transitiveGroupLookup(sp.ID, m.wsGroups())
-		if len(direct) == 0 && len(sp.Groups) > 0 {
-			direct = sp.Groups
-		}
-		var groupSection string
-		if m.popupGroupTree {
-			groupSection = renderGroupAncestryTree(sp.ID, m.wsGroups())
-		} else {
-			groupSection = popupGroupSection(direct, indirect)
-		}
-		m.popup = &popupContent{
-			title: "Service principal: " + sp.DisplayName,
-			body:  renderSPDetailPopup(sp, groupSection),
-		}
-	}
+func (m IdentityModel) rerenderDetail() IdentityModel {
+	content := m.renderDetailContent()
+	m.detailVP.SetContent(content)
+	m.detailVP.GotoTop()
 	return m
 }
 
@@ -1257,7 +1421,7 @@ func renderGroupTreeNode(
 		styleIdentityGroupName.Render(g.DisplayName) + " " +
 		styleIdentityMuted.Render(fmt.Sprintf("(%d)", len(g.Members)))
 
-	items := []treeItem{{line: label, isGroup: true, groupKey: groupKey, wsName: wsName}}
+	items := []treeItem{{line: label, isGroup: true, groupKey: groupKey, wsName: wsName, entityID: g.ID}}
 	if !isExpanded {
 		return items
 	}
